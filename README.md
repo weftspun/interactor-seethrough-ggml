@@ -6,9 +6,10 @@ depth map, saved as a layered PSD. C++
 port of [See-Through](https://github.com/shitagaki-lab/see-through)
 (Shitagaki Lab, SIGGRAPH 2026).
 
-## Get the weights — download and unpack into a `models/` folder:
+Get the weights (Or grab a prebuilt release binary instead of building).
 
-```sh
+```bash
+# Download and unpack into a `models/` folder, then build.
 mkdir models && cd models
 gh release download v0.0.2-dev --repo weftspun/see-through-cpp \
     -p "lama.gguf" -p "layerdiff-te1.gguf" -p "layerdiff-te2.gguf" \
@@ -19,43 +20,10 @@ gh release download v0.0.2-dev --repo weftspun/see-through-cpp \
 cat layerdiff-unet.gguf.zst.part* | zstd -d -o layerdiff-unet.gguf
 cat marigold-unet.gguf.zst.part* | zstd -d -o marigold-unet.gguf
 rm *.zst.part*
-```
-
-(Or grab a prebuilt release binary instead of building)
-
-## Build (Vulkan backend must be enabled explicitly — it's off by default in ggml):
-
-```sh
 cmake -B build -G Ninja -DGGML_VULKAN=ON && cmake --build build
-```
-
-## Run:
-
-```sh
+# PNG, JPEG, BMP, TGA, GIF, and PSD are supported by `see-through.cpp`.
 ./build/see-through -m models -i in.png -o out.psd
+# `-o` must end in `.psd`. Produces a flat, layered `out.psd` (plus an
+# `out_depth.psd` companion and an `out.psd.json` metadata sidecar), matching
+# upstream's `dump_parts_psd`.
 ```
-
-Input is loaded via [stb_image](https://github.com/nothings/stb), so PNG, JPEG,
-BMP, TGA, GIF, and PSD are supported — **not WebP**; convert first (e.g.
-`ffmpeg -i in.webp in.png`).
-
-`-o` must end in `.psd`. Produces a flat, layered `out.psd` (plus an
-`out_depth.psd` companion and an `out.psd.json` metadata sidecar), matching
-upstream's `dump_parts_psd`.
-
-Useful flags:
-
-- `--steps 30` / `--res 1280` / `--depth-res 768` — quality/speed knobs,
-  matching upstream's own `inference_psd.py` CLI defaults exactly
-  (`--resolution 1280`, `--resolution_depth 768`, `--inference_steps 30`);
-  drop `--res` to `768` for a noticeably faster, still-decent-quality run
-  (that's what the HF Space demo defaults to, for its free-tier GPU budget)
-- `--png-dir <dir>` — also export each layer as a separate PNG
-- `--seed 42` — for reproducible output
-- `--no-split-depth` / `--no-split-lr` — disable the depth-cluster
-  front/back split (default target: `hair`) or the left/right
-  connected-component split (default targets: `handwear`, `eyewhite`,
-  `irides`, `eyelash`, `eyebrow`, `ears`); both are on by default
-- `--split-depth-tags tag1,tag2,...` / `--split-lr-tags tag1,tag2,...` —
-  override which tags each split applies to (replaces the default list,
-  doesn't append to it)
