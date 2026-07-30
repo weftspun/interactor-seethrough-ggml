@@ -50,3 +50,4 @@ debug_*.png
 debug_headbug/
 debug_untiled/
 .DS_Store
+.cache/
