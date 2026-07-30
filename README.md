@@ -6,8 +6,6 @@ depth map, saved as a layered PSD. C++
 port of [See-Through](https://github.com/shitagaki-lab/see-through)
 (Shitagaki Lab, SIGGRAPH 2026).
 
-Requires a GPU with Vulkan support (no CPU fallback).
-
 ## Get the weights — download and unpack into a `models/` folder:
 
 ```sh
