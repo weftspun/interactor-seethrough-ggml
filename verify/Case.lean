@@ -20,9 +20,12 @@ open PlausibleWitnessDag
 opaque stWitnessCheckFlat (op w h c oc stride heads tq tk batch knobs : UInt32)
     (seed : UInt64) : Float
 
+@[extern "st_witness_check_gemm"]
+opaque stWitnessCheckGemm (m n k scale_bits : UInt32) (seed : UInt64) : Float
+
 structure Case where
   name  : String
-  op    : UInt32   -- 0 conv2d, 1 attn, 2 linear_quant
+  op    : UInt32   -- 0 conv2d, 1 attn, 2 linear_quant, 4 gemm
   w     : UInt32 := 0
   h     : UInt32 := 0
   c     : UInt32 := 0
@@ -32,12 +35,18 @@ structure Case where
   tq    : UInt32 := 0
   tk    : UInt32 := 0
   batch : UInt32 := 1
-  knobs : UInt32 := 0   -- bit0 direct, bit1 rowchunk, bit2 flash, bit3 tiled naive attn
+  knobs : UInt32 := 0
   deriving Repr, Inhabited
 
+def gemmCheck (cs : Case) (seed : UInt64) : Float :=
+  stWitnessCheckGemm cs.c cs.oc cs.tq cs.batch seed
+
 def Case.check (cs : Case) (seed : UInt64) : Float :=
-  stWitnessCheckFlat cs.op cs.w cs.h cs.c cs.oc cs.stride cs.heads cs.tq cs.tk
-    cs.batch cs.knobs seed
+  if cs.op == 4 then
+    gemmCheck cs seed
+  else
+    stWitnessCheckFlat cs.op cs.w cs.h cs.c cs.oc cs.stride cs.heads cs.tq cs.tk
+      cs.batch cs.knobs seed
 
 def conv (name : String) (w h c oc stride knobs : UInt32) (batch : UInt32 := 1) : Case :=
   { name, op := 0, w, h, c, oc, stride, knobs, batch }
@@ -47,6 +56,9 @@ def attn (name : String) (heads tq tk batch knobs : UInt32) : Case :=
 
 def linq (name : String) (c oc tq : UInt32) : Case :=
   { name, op := 2, c, oc, tq }
+
+def gemm (name : String) (m n k : UInt32) (scale_bits : UInt32 := 0) : Case :=
+  { name, op := 4, c := m, oc := n, tq := k, batch := scale_bits }
 
 def seed : UInt64 := 42
 

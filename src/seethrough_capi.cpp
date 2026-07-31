@@ -192,7 +192,7 @@ double st_witness_check_flat(uint32_t op, uint32_t w, uint32_t h, uint32_t c,
                              uint32_t tq, uint32_t tk, uint32_t batch,
                              uint32_t knobs, uint64_t seed) {
     st_case sc = {};
-    sc.op = op == 0 ? "conv2d" : (op == 1 ? "attn" : "linear_quant");
+    sc.op = op == 0 ? "conv2d" : (op == 1 ? "attn" : (op == 2 ? "linear_quant" : "gemm"));
     sc.w = (int32_t) w; sc.h = (int32_t) h; sc.c = (int32_t) c; sc.oc = (int32_t) oc;
     sc.stride = (int32_t) stride;
     sc.heads = (int32_t) heads; sc.tq = (int32_t) tq; sc.tk = (int32_t) tk;
@@ -275,4 +275,61 @@ double st_witness_check(const st_case * c) {
         return interval_violation(cand, ref, 1e-3, 0.15);
     }
     return -1.0;
+}
+
+// ---------------------------------------------------------------------------
+// gemm witness: pure f32 x f32 matmul at scale = 2^batch, comparing CPU vs GPU
+// ---------------------------------------------------------------------------
+struct GemmHelper {
+    Fixture & fx;
+    int M, N, K; double scale; uint64_t seed;
+    GemmHelper(Fixture & f, int m, int n, int k, double s, uint64_t sd)
+        : fx(f), M(m), N(n), K(k), scale(s), seed(sd) {}
+    std::vector<float> run(bool use_gpu) {
+        fx.commit(); Model & m = fx.m;
+        const size_t max_nodes = 4096;
+        size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
+        ggml_init_params ip = { meta, nullptr, true };
+        m.ctx_g = ggml_init(ip);
+        ggml_tensor * a = ggml_new_tensor_2d(m.ctx_g, GGML_TYPE_F32, K, M);
+        ggml_tensor * b = ggml_new_tensor_2d(m.ctx_g, GGML_TYPE_F32, N, K);
+        ggml_set_input(a); ggml_set_input(b);
+        ggml_tensor * r = mul_mat_f32(m.ctx_g, b, a);  // [N, M] — our patched mul_mat_f32
+        ggml_set_output(r);
+        ggml_backend_t backend = use_gpu ? capi_backend() : ggml_backend_cpu_init();
+        ggml_cgraph * gf = ggml_new_graph_custom(m.ctx_g, max_nodes, false);
+        ggml_build_forward_expand(gf, r);
+        ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+        std::vector<float> res;
+        std::mt19937_64 rng(seed);
+        std::normal_distribution<float> nrm(0.0f, (float)scale);
+        if (ggml_gallocr_alloc_graph(alloc, gf)) {
+            std::vector<float> av((size_t)M * K), bv((size_t)K * N);
+            for (float & v : av) v = nrm(rng);
+            for (float & v : bv) v = nrm(rng);
+            ggml_backend_tensor_set(a, av.data(), 0, av.size() * 4);
+            ggml_backend_tensor_set(b, bv.data(), 0, bv.size() * 4);
+            if (ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS) {
+                res.resize(ggml_nelements(r));
+                ggml_backend_tensor_get(r, res.data(), 0, res.size() * 4);
+            }
+        }
+        ggml_gallocr_free(alloc); ggml_backend_free(backend);
+        ggml_free(m.ctx_g); m.ctx_g = nullptr;
+        return res;
+    }
+};
+
+double st_witness_check_gemm(const st_case * c) {
+    if (c->c < 1 || c->oc < 1 || c->tq < 1) return -1.0;
+    const int M = c->c, N = c->oc, K = c->tq;
+    const double scale = c->batch >= 0 ? (double)(1u << c->batch) : 1.0;
+    Fixture fx(c->seed + 1);
+    fx.weight("_dummy", {1, 1});
+    GemmHelper gh(fx, M, N, K, scale, c->seed + 2);
+    auto ref = gh.run(false);   // CPU
+    auto cand = gh.run(true);   // GPU (Metal simdgroup)
+    if (ref.empty() || cand.empty()) return -1.0;
+    // Tolerance: atol=1e-3, rtol ≈ sqrt(K) / 1024 (f16 mantissa loss per reduction)
+    return interval_violation(cand, ref, 1e-3, sqrt((double)K) / 1024.0);
 }

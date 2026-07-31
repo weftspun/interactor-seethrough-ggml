@@ -125,7 +125,29 @@ ggml_tensor * bias4d(ggml_context * ctx, ggml_tensor * b) {
 // Reverted to the MADR-0009-proven behavior. See git history / that MADR
 // for the out_prod/residual approach if a specific op site is later shown
 // to need it.
-static ggml_tensor * mul_mat_f32(ggml_context * ctx, ggml_tensor * a, ggml_tensor * b) {
+// Metal's f16 GEMM kernels don't accumulate in f32 reliably, causing NaN
+// after a few diffusion steps. Auto-detect Metal backend and cast f16 operands
+// to f32 so Metal uses f32×f32 kernels with f32 accumulation.
+static bool st_is_metal_backend() {
+    static bool cached = false, checked = false;
+    if (checked) return cached;
+    checked = true;
+    size_t n = ggml_backend_dev_count();
+    for (size_t i = 0; i < n; i++) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        const char * name = ggml_backend_dev_name(d);
+        if (name && name[0] == 'M' && name[1] == 'T' && name[2] == 'L') {
+            cached = true; return cached;
+        }
+    }
+    return cached;
+}
+
+ggml_tensor * mul_mat_f32(ggml_context * ctx, ggml_tensor * a, ggml_tensor * b) {
+    if (st_is_metal_backend()) {
+        if (a->type == GGML_TYPE_F16) a = ggml_cast(ctx, a, GGML_TYPE_F32);
+        if (b->type == GGML_TYPE_F16) b = ggml_cast(ctx, b, GGML_TYPE_F32);
+    }
     ggml_tensor * r = ggml_mul_mat(ctx, a, b);
     ggml_mul_mat_set_prec(r, GGML_PREC_F32);
     return r;
@@ -166,7 +188,7 @@ ggml_tensor * conv2d(Model & m, ggml_tensor * x, const std::string & pre, int st
         // 0009's production-shape tap analysis already characterized f16
         // conv-activation rounding in this UNet as ordinary noise that
         // shrinks 20x through the up-path; opt-in until IoU-verified here.
-        const ggml_type imt = (w->type == GGML_TYPE_F16 || !getenv("SEETHROUGH_NO_CONV_F16"))
+        const ggml_type imt = (w->type == GGML_TYPE_F16 && !st_is_metal_backend() && !getenv("SEETHROUGH_NO_CONV_F16"))
                                   ? GGML_TYPE_F16 : GGML_TYPE_F32;
         int64_t budget_mb = 2048;
         if (const char * e = getenv("SEETHROUGH_ROWCHUNK_BUDGET_MB")) budget_mb = atoll(e);
@@ -194,12 +216,12 @@ ggml_tensor * conv2d(Model & m, ggml_tensor * x, const std::string & pre, int st
             if (y0 > 0 && y1 < H) {
                 // interior: horizontal pad only — output rows match exactly
                 ggml_tensor * im = ggml_im2col(ctx, w, slab, 1, 1, 1, 0, 1, 1, true,
-                                               w->type == GGML_TYPE_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32);
+                                               (w->type == GGML_TYPE_F16 && !st_is_metal_backend()) ? GGML_TYPE_F16 : GGML_TYPE_F32);
                 ys = conv_mm(ctx, im, w);
             } else {
                 // edge tiles: full pad then crop the halo rows back out
                 ggml_tensor * im = ggml_im2col(ctx, w, slab, 1, 1, 1, 1, 1, 1, true,
-                                               w->type == GGML_TYPE_F16 ? GGML_TYPE_F16 : GGML_TYPE_F32);
+                                               (w->type == GGML_TYPE_F16 && !st_is_metal_backend()) ? GGML_TYPE_F16 : GGML_TYPE_F32);
                 ggml_tensor * full = conv_mm(ctx, im, w);
                 ys = ggml_cont(ctx, ggml_view_4d(ctx, full, W, y1 - y0, w->ne[3], N,
                                                  full->nb[1], full->nb[2], full->nb[3],
@@ -222,7 +244,7 @@ ggml_tensor * conv2d(Model & m, ggml_tensor * x, const std::string & pre, int st
     // ggml_conv_2d unconditionally rounds activations to f16 in im2col; for
     // f32 weights (SDXL VAE encoder has activations too large for that) keep
     // the whole conv in f32 instead
-    ggml_type it = (w->type == GGML_TYPE_F16 || !getenv("SEETHROUGH_NO_CONV_F16"))
+    ggml_type it = (w->type == GGML_TYPE_F16 && !st_is_metal_backend() && !getenv("SEETHROUGH_NO_CONV_F16"))
                        ? GGML_TYPE_F16 : GGML_TYPE_F32;
     ggml_tensor * im = ggml_im2col(ctx, w, x, stride, stride, pad, pad, 1, 1, true, it);
     ggml_tensor * r = conv_mm(ctx, im, w);
@@ -269,6 +291,10 @@ ggml_tensor * linear(Model & m, ggml_tensor * x, const std::string & pre) {
     // (conv2d and attention keep their PREC_F32 guards regardless).
     ggml_tensor * y;
     if (m.linear_fast || getenv("SEETHROUGH_LINEAR_FAST")) {
+        if (st_is_metal_backend()) {
+            if (w->type == GGML_TYPE_F16) w = ggml_cast(ctx, w, GGML_TYPE_F32);
+            if (x->type == GGML_TYPE_F16) x = ggml_cast(ctx, x, GGML_TYPE_F32);
+        }
         y = ggml_mul_mat(ctx, w, x);
     } else {
         y = mul_mat_f32(ctx, w, x);

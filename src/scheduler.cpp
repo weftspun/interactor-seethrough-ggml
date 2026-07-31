@@ -1,6 +1,7 @@
 #include "scheduler.h"
 
 #include <cmath>
+#include <algorithm>
 
 // alpha_t = 1/sqrt(sigma^2+1), sigma_t = sigma*alpha_t (diffusers
 // _sigma_to_alpha_sigma_t)
@@ -67,9 +68,16 @@ void DpmSolverSDE::step(std::vector<float> & sample, const std::vector<float> & 
     const double c_x0     = alpha_t * (1.0 - exp(-2.0 * h));
     const double c_noise  = sigma_tt * sqrt(1.0 - exp(-2.0 * h));
 
+    // Clamp x0 to safe f16 range so Metal simdgroup GEMM doesn't overflow.
+    // The DPM-Solver SDE can produce x0 values > 65504 at late timesteps
+    // (sigma/alpha amplifies the prediction), which overflows Metal's
+    // half-precision simdgroup operands. 60000 leaves headroom below 65504.
+    const float F16_CLAMP = 60000.0f;
+
     if (lower_order_nums < 1 || lower_order_final) {
         for (size_t i = 0; i < D; i++) {
-            sample[i] = (float) (c_sample * sample[i] + c_x0 * x0[i] + c_noise * noise[i]);
+            float x0c = std::max(-F16_CLAMP, std::min(F16_CLAMP, x0[i]));
+            sample[i] = (float) (c_sample * sample[i] + c_x0 * x0c + c_noise * noise[i]);
         }
     } else {
         // second order, midpoint: D1 = (m0 - m1)/r0, r0 = h_0/h
@@ -78,8 +86,9 @@ void DpmSolverSDE::step(std::vector<float> & sample, const std::vector<float> & 
         const double lambda_s1 = log(alpha_s1) - log(sigma_s1t);
         const double r0 = (lambda_s0 - lambda_s1) / h;
         for (size_t i = 0; i < D; i++) {
-            double d1 = (x0[i] - prev_x0[i]) / r0;
-            sample[i] = (float) (c_sample * sample[i] + c_x0 * (x0[i] + 0.5 * d1) + c_noise * noise[i]);
+            float x0c = std::max(-F16_CLAMP, std::min(F16_CLAMP, x0[i]));
+            double d1 = (x0c - prev_x0[i]) / r0;
+            sample[i] = (float) (c_sample * sample[i] + c_x0 * (x0c + 0.5 * d1) + c_noise * noise[i]);
         }
     }
 

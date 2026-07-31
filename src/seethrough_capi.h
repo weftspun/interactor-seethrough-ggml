@@ -59,6 +59,11 @@ ST_API double st_witness_check_flat(uint32_t op, uint32_t w, uint32_t h, uint32_
                              uint32_t tq, uint32_t tk, uint32_t batch,
                              uint32_t knobs, uint64_t seed);
 
+// gemm witness: pure f32×f32 matmul comparing CPU vs GPU at scale=2^scale_bits.
+// Returns interval violation (>1.0 = half-precision overflow detected).
+ST_API double st_witness_check_gemm(uint32_t m, uint32_t n, uint32_t k,
+                             uint32_t scale_bits, uint64_t seed);
+
 #ifdef __cplusplus
 }
 #endif

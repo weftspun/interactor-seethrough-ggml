@@ -70,7 +70,21 @@ static void disable_broken_coopmat2() {
 
 static ggml_backend_dev_t pipe_gpu(const PipelineConfig & cfg) {
     disable_broken_coopmat2();
-    return ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+    // Discrete GPU first (NVIDIA via Vulkan etc), then fall back to any
+    // non-CPU accelerator (Apple Metal reports as IGPU, but it's a
+    // full-performance GPU — not a "slow integrated" chip).
+    ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+    if (!dev) { dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU); }
+    return dev;
+}
+
+// Metal backend detection: Vulkan-specific workarounds (conv_row_chunk,
+// tiled_naive_attn) produce zero output on Metal. Detect by device name
+// prefix — Metal devices are named "MTL0", "MTL1", etc.
+static bool pipe_is_metal(ggml_backend_dev_t d) {
+    if (!d) return false;
+    const char * name = ggml_backend_dev_name(d);
+    return name && name[0] == 'M' && name[1] == 'T' && name[2] == 'L';
 }
 
 // Cheap wall-clock attribution for the 1m12s speedup work (MADR 0010):
@@ -149,8 +163,8 @@ static bool pipe_load(const PipelineConfig & cfg, Model & m, const std::string &
             // 40x40). direct_conv stays on as the fallback for the
             // stride-2 downsampler convs, which conv_row_chunk doesn't
             // handle.
-            m.direct_conv = true;
-            m.conv_row_chunk = !getenv("SEETHROUGH_NO_ROWCHUNK_UNET");
+            m.direct_conv = !pipe_is_metal(d);  // Metal: use im2col (direct_conv silently zero)
+            m.conv_row_chunk = !pipe_is_metal(d) && !getenv("SEETHROUGH_NO_ROWCHUNK_UNET");
             m.conv_row_chunk_min_hw = 40 * 40;
         }
         // Query-tiled naive attention, VRAM-bounded so it can actually run
@@ -182,7 +196,10 @@ static bool pipe_load(const PipelineConfig & cfg, Model & m, const std::string &
         // it needs its own validation for marigold-unet's specific shapes
         // first, or a way to distinguish which UNet is loading, not a
         // blanket `unet` flag.
-        m.tiled_naive_attn = !getenv("SEETHROUGH_NO_TILED_ATTN");
+        // tiled_naive_attn is a Vulkan-specific VRAM workaround. On Metal
+        // it produces zero output (same root cause as conv_row_chunk).
+        bool is_metal = pipe_is_metal(d);
+        m.tiled_naive_attn = !is_metal && !getenv("SEETHROUGH_NO_TILED_ATTN");
         // A later re-run of the Lean kernel-witness gate (verify/KernelGate,
         // 2026-07-20) found flash_attn_ext failing at layerdiff-unet's
         // production shapes (t1600/t4096/t6400 self-attention, 77-token
@@ -383,7 +400,7 @@ bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
         // nose IoU 0.23-0.83) while every body-pass layer stayed >=0.99, so
         // the head pass (group_index 1, where all the small features live)
         // keeps GGML_PREC_F32. SEETHROUGH_NO_LINEAR_FAST_BODY reverts.
-        m.linear_fast = group_index == 0 && !getenv("SEETHROUGH_NO_LINEAR_FAST_BODY");
+        m.linear_fast = group_index == 0 && !pipe_is_metal(pipe_gpu(cfg)) && !getenv("SEETHROUGH_NO_LINEAR_FAST_BODY");
 
         size_t max_nodes = 294912;
         size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
@@ -427,6 +444,18 @@ bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
                 std::copy(c_concat.begin(), c_concat.end(), input.begin() + f * 2 * DZ + DZ);
             }
             // gallocr recycles input buffers: re-set ALL inputs every compute
+            // Latent scaling for Metal's half-precision GEMM: if latent values
+            // exceed f16 range (±65504), the simdgroup HALF8x8 operands overflow
+            // to inf/NaN. Scale down before the UNet call, scale eps back after.
+            double lat_max_abs = 0.0;
+            for (float v : input) lat_max_abs = std::max(lat_max_abs, std::fabs((double)v));
+            const double F16_SAFE = 100.0;
+            const double lat_scale = lat_max_abs > F16_SAFE ? F16_SAFE / lat_max_abs : 1.0;
+            if (lat_scale < 1.0) {
+                for (float & v : input) v = (float)(v * lat_scale);
+                if (cfg.verbose) fprintf(stderr, "[latent] scaled by %.4f (max_abs=%.1f)\n",
+                                         lat_scale, lat_max_abs);
+            }
             ggml_backend_tensor_set(ehs_t, ehs.data(), 0, ehs.size() * 4);
             ggml_backend_tensor_set(text, pooled.data(), 0, pooled.size() * 4);
             ggml_backend_tensor_set(tids, tid_v.data(), 0, tid_v.size() * 4);
@@ -437,6 +466,11 @@ bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
             const double st0 = now_s();
             if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) return false;
             ggml_backend_tensor_get(out, eps.data(), 0, D * 4);
+            // Unscale eps if we scaled the input down (Metal half-precision GEMM)
+            if (lat_scale < 1.0) {
+                const double eps_scale = 1.0 / lat_scale;
+                for (float & v : eps) v = (float)(v * eps_scale);
+            }
             step_times.push_back(now_s() - st0);
             for (float & v : noise) v = nrm(rng);
             sch.step(lat, eps, noise);
@@ -469,7 +503,15 @@ bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
         std::string p1 = cfg.model_dir + "/layerdiff-vae.gguf";
         std::string p2 = cfg.model_dir + "/trans-vae.gguf";
         if (!pipe_load(cfg, mv, p1) || !pipe_load(cfg, mv, p2)) return false;
-        if (pipe_gpu(cfg)) mv.conv_row_chunk = true;   // exact im2col, row-tiled
+        if (pipe_gpu(cfg)) {
+            // conv_row_chunk is a Vulkan-specific workaround for a
+            // ggml_conv_2d_direct defect (docs/ggml-upstream-issues.md #4).
+            // On Metal, direct_conv works correctly and the row-chunked
+            // im2col path produces all-zero output.
+            ggml_backend_dev_t dev = pipe_gpu(cfg);
+            bool is_metal = pipe_is_metal(dev);
+            mv.conv_row_chunk = !is_metal;
+        }
 
         layers_out.assign(F, Image{});
         // Frames decoded per-frame (NB=1) through one reused graph.
@@ -747,7 +789,7 @@ bool marigold_depth(const PipelineConfig & cfg, const std::vector<Image> & layer
         Model mv;
         std::string p = cfg.model_dir + "/marigold-vae.gguf";
         if (!pipe_load(cfg, mv, p)) return false;
-        if (pipe_gpu(cfg)) mv.conv_row_chunk = true;   // decode stage only
+        if (pipe_gpu(cfg)) mv.conv_row_chunk = !pipe_is_metal(pipe_gpu(cfg));   // decode stage only
         depths_out.assign(F, Image{});
         // Same graph-reuse pattern as the cond-encode loop above: one build/
         // alloc, F computes.

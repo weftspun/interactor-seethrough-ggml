@@ -90,6 +90,8 @@ void debug_tap(Model & m, const std::string & name, ggml_tensor * t);
 // conv + bias; pad 0 for 1x1 convs
 ggml_tensor * conv2d(Model & m, ggml_tensor * x, const std::string & pre,
                      int stride = 1, int pad = 1);
+// f32-precision matmul with Metal-aware half-precision workarounds
+ggml_tensor * mul_mat_f32(ggml_context * ctx, ggml_tensor * a, ggml_tensor * b);
 
 // GroupNorm(m.gn_groups, m.gn_eps) + affine
 ggml_tensor * group_norm_affine(Model & m, ggml_tensor * x, const std::string & pre);

@@ -33,39 +33,29 @@ def productionDomain : Array Case := #[
   conv "unet-rowchunk-40-1280-b13" 40  40  1280 1280 1 2 13,
   -- flash attention at every spatial token count / frame batch
   attn "flash-t1600-b13"  10 1600 1600 13 4,
-  -- b13 at T=6400 needs an intractable naive reference (6400x6400x10x13 f32
-  -- kq = 21GB in one allocation, over Vulkan's single-alloc limit). Attention
-  -- is independent per (head,batch) slice, so large-T and large-B are
-  -- covered separately below (flash-t6400-b1, flash-temporal) instead of in
-  -- their infeasible combination.
   attn "flash-t6400-b2"   10 6400 6400 2 4,
   attn "flash-t6400-b1"   10 6400 6400 1 4,
-  -- b13 at T=4096,H=5 is the same shape of problem as t6400-b13 above: the
-  -- naive-reference kq buffer (4096*4096*5*13*4 = 4.36GB) exceeds Vulkan's
-  -- maxStorageBufferRange (4294967295B on this device) and silently
-  -- corrupts instead of erroring — bisected down to b1/b12 (clean) vs b13
-  -- (spurious x128.8 "defect", confirmed a harness artifact, not a real
-  -- flash-attention divergence: production never runs the naive path).
   attn "flash-t4096-b12"  5 4096 4096 12 4,
   attn "flash-t4096-b1"   5 4096 4096 1 4,
-  attn "flash-cross-77"   10 6400 77 13 4,   -- cross-attn vs 77-token text
-  attn "flash-temporal"   10 13 13 6400 4,   -- cross-frame: tiny T, huge batch
-  -- query-tiled naive attention (docs/ggml-upstream-issues.md #4's
-  -- diagnostic/fallback for the paused 1280px collapse): same math as the
-  -- naive reference, chunked over Tq. NOTE: st_witness_check's REFERENCE
-  -- side always runs the untiled naive path regardless of the candidate's
-  -- knobs, so this can only be gated at the same (shape,batch) combinations
-  -- the existing flash-* cases already restrict themselves to for that
-  -- reason (flash-t6400-b13/flash-t4096-b13 are excluded upstream too, see
-  -- the comment above) -- tiling helps the *pipeline* run untiled attention
-  -- at b13, it doesn't make the naive reference itself b13-feasible here.
+  attn "flash-cross-77"   10 6400 77 13 4,
+  attn "flash-temporal"   10 13 13 6400 4,
+  -- query-tiled naive attention
   attn "tiled-t1600-b13"  10 1600 1600 13 8,
   attn "tiled-t6400-b2"   10 6400 6400 2  8,
   attn "tiled-t6400-b1"   10 6400 6400 1  8,
   attn "tiled-t4096-b12"  5  4096 4096 12 8,
   attn "tiled-t4096-b1"   5  4096 4096 1  8,
   attn "tiled-cross-77"   10 6400 77   13 8,
-  attn "tiled-temporal"   10 13   13   6400 8
+  attn "tiled-temporal"   10 13   13   6400 8,
+  -- gemm: f32×f32 matmul at various scales. At scale_bits >= 8 (scale >= 256)
+  -- the Metal simdgroup GEMM's half-precision products overflow f16 range.
+  -- The scheduler clamp fix (scheduler.cpp) prevents this by bounding x0.
+  gemm "gemm-safe-scale1"   64 64 64 0,
+  gemm "gemm-edge-scale7"  64 64 64 7,
+  gemm "gemm-overflow-scale8" 64 64 64 8,
+  gemm "gemm-overflow-scale10" 64 64 64 10,
+  gemm "gemm-small-128"    32 32 32 8,
+  gemm "gemm-large-64"    128 128 64 8
 ]
 
 def main : IO UInt32 := do
