@@ -125,17 +125,28 @@ ggml_tensor * bias4d(ggml_context * ctx, ggml_tensor * b) {
 // Reverted to the MADR-0009-proven behavior. See git history / that MADR
 // for the out_prod/residual approach if a specific op site is later shown
 // to need it.
-// Metal's f16 GEMM kernels don't accumulate in f32 reliably, causing NaN
-// after a few diffusion steps. Auto-detect Metal backend and cast f16 operands
-// convenience: the GPU backend type is checked at each op dispatch -- no longer
-// needs a separate stub.
+// Metal simdgroup HALF8x8 accumulates in f32 but f16×f16 matrix elements
+// can overflow for model weights. Cast f16 operands to f32 on Metal only.
+static bool st_is_metal_backend() {
+    static bool cached = false, checked = false;
+    if (checked) return cached;
+    checked = true;
+    size_t n = ggml_backend_dev_count();
+    for (size_t i = 0; i < n; i++) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        const char * name = ggml_backend_dev_name(d);
+        if (name && name[0] == 'M' && name[1] == 'T' && name[2] == 'L') {
+            cached = true; return cached;
+        }
+    }
+    return cached;
+}
 
 ggml_tensor * mul_mat_f32(ggml_context * ctx, ggml_tensor * a, ggml_tensor * b) {
-    // Metal's simdgroup HALF8x8 accumulates in f32 but the f16×f16 matrix
-    // elements can overflow for model weights. Cast f16 operands to f32
-    // so the Metal backend uses f32×f32 matmul (no simdgroup, slower but safe).
-    if (a->type == GGML_TYPE_F16) a = ggml_cast(ctx, a, GGML_TYPE_F32);
-    if (b->type == GGML_TYPE_F16) b = ggml_cast(ctx, b, GGML_TYPE_F32);
+    if (st_is_metal_backend()) {
+        if (a->type == GGML_TYPE_F16) a = ggml_cast(ctx, a, GGML_TYPE_F32);
+        if (b->type == GGML_TYPE_F16) b = ggml_cast(ctx, b, GGML_TYPE_F32);
+    }
     ggml_tensor * r = ggml_mul_mat(ctx, a, b);
     ggml_mul_mat_set_prec(r, GGML_PREC_F32);
     return r;
