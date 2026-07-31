@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <cstring>
+#include <vector>
 
 Model::~Model() {
     for (ggml_backend_buffer * b : bufs) ggml_backend_buffer_free(b);
@@ -107,45 +108,24 @@ ggml_tensor * bias4d(ggml_context * ctx, ggml_tensor * b) {
     return ggml_reshape_4d(ctx, b, 1, 1, b->ne[0], 1);
 }
 
-// Vulkan's ggml_mul_mat has a silent int8 fast path (quantize_y) that
-// quantizes the activation operand to Q8_1 whenever the device supports
-// VK_KHR_shader_integer_dot_product and that operand's (ne0*ne1)%4==0 --
-// true for nearly every conv/linear/attention shape here.
-// ggml_mul_mat_set_prec(GGML_PREC_F32) doesn't disable it, only selects a
-// variant of the already-quantized pipeline. An out_prod-based dodge (and,
-// for quantized/f16 weights where out_prod can't run at all, an explicit
-// F16 error-feedback residual pass) was tried and measured exact against a
-// CPU ground truth -- but per docs/decisions/0010-speedup-candidates.md,
-// applying it blanket to every matmul in the whole network cost ~7x on the
-// main UNet loop (108s -> 749s, real trace data), while MADR 0009 already
-// showed plain mul_mat + PREC_F32 (quantize_y's precision loss included)
-// produces a full, visually-coherent, 0.69-mean-IoU production run. The
-// precision loss is real but was never shown to be visible in output;
-// paying 7x for it isn't justified without a demonstrated regression.
-// Reverted to the MADR-0009-proven behavior. See git history / that MADR
-// for the out_prod/residual approach if a specific op site is later shown
-// to need it.
-// Metal simdgroup HALF8x8 accumulates in f32 but f16×f16 matrix elements
-// can overflow for model weights. Cast f16 operands to f32 on Metal only.
-static bool st_is_metal_backend() {
-    static bool cached = false, checked = false;
-    if (checked) return cached;
-    checked = true;
-    size_t n = ggml_backend_dev_count();
-    for (size_t i = 0; i < n; i++) {
-        ggml_backend_dev_t d = ggml_backend_dev_get(i);
-        const char * name = ggml_backend_dev_name(d);
-        if (name && name[0] == 'M' && name[1] == 'T' && name[2] == 'L') {
-            cached = true; return cached;
-        }
-    }
-    return cached;
-}
+// Metal simdgroup HALF8x8 always accumulates in f32 per ARM ISA. The
+// kernel_mul_mm_f16_f32 variant keeps the weight in f16 (native simdgroup
+// input) and accumulates in f32 — no overflow risk. Only the activation
+// (b) must stay f32; kernel_mul_mm_f16_f16 stores intermediates in f16
+// and would overflow for matmuls with many elements per output.
 
 ggml_tensor * mul_mat_f32(ggml_context * ctx, ggml_tensor * a, ggml_tensor * b) {
-    if (st_is_metal_backend()) {
-        if (a->type == GGML_TYPE_F16) a = ggml_cast(ctx, a, GGML_TYPE_F32);
-        if (b->type == GGML_TYPE_F16) b = ggml_cast(ctx, b, GGML_TYPE_F32);
+    // Keep f16 weights in f16 so the Metal backend selects the native
+    // simdgroup HALF8x8 path (kernel_mul_mm_f16_f32). The HALF8x8 hardware
+    // always accumulates in f32 per ARM ISA spec, but kernel_mul_mm_f16_f16
+    // stores intermediate results back to f16 which overflows at ~64K.
+    // Cast the activation (b) to f32 to ensure kernel_mul_mm_f16_f32 is
+    // selected (f32 accumulation) instead of kernel_mul_mm_f16_f16.
+    if (a->type == GGML_TYPE_F16 && b->type != GGML_TYPE_F32) {
+        b = ggml_cast(ctx, b, GGML_TYPE_F32);
+    }
+    if (b->type == GGML_TYPE_F16) {
+        b = ggml_cast(ctx, b, GGML_TYPE_F32);
     }
     ggml_tensor * r = ggml_mul_mat(ctx, a, b);
     ggml_mul_mat_set_prec(r, GGML_PREC_F32);
