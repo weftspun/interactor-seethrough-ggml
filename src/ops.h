@@ -29,6 +29,7 @@ struct Model {
                               // tiny head-pass facial layers; callers may
                               // scope this per pass)
     bool  flash_attn = false; // token attention via ggml_flash_attn_ext (GPU)
+    bool  kv_f32    = false; // flash_attn: cast K/V to f32 for Metal backend precision
     bool  tiled_naive_attn = false; // query-tiled naive attention instead of
                                   // flash_attn: same math as the plain naive
                                   // path but chunked over Tq so the (Tk,Tq,H,B)

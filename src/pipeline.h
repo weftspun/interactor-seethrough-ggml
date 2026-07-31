@@ -1,7 +1,7 @@
 // Pipeline stages for the see-through CLI: CLIP tag encoding, the
-// apply_layerdiff v3 two-pass diffusion (body + head crop), the Marigold
-// depth stage, and PSD assembly. GPU (Vulkan)-only; each stage loads and
-// frees its own weights.
+// layerdiff v3 two-pass diffusion (body + head crop), the Marigold
+// depth stage, and PSD assembly. GPU (Vulkan/Metal)-only; each stage
+// loads and frees its own weights.
 #pragma once
 
 #include "image_utils.h"
@@ -22,8 +22,8 @@ struct PipelineConfig {
     int  depth_steps = 4;
     uint64_t seed = 42;
     int  threads = 8;
-    bool verbose = true;
-    std::string device = "auto";  // "auto"/"vulkan" = first GPU. GPU-only: "cpu" is rejected, not a fallback.
+    bool verbose = false;
+    std::string device = "auto";  // "auto"/"vulkan" = first GPU. GPU-only: "cpu" rejected, no fallback.
     std::string debug_dir;        // when set: dump per-stage stats + frames
     // when set: each span (see otel_jsonl.h) is appended + fflush()'d to
     // this JSONL file the instant it closes, not batched until the run
@@ -37,7 +37,7 @@ struct PipelineConfig {
     // "topwear" defaults in too: garments with a draped/trailing portion
     // (e.g. a sash extending behind the legs) decode as one tag with two
     // genuinely different depths: front-body vs. the hallucinated occluded
-    // drape. Left unsplit, that averages into one wrong mid-value; splitting
+    // drape. Left unsplit, that averages into one mid-value; splitting
     // gives each its own honest depth_median (2026-07-19 field report).
     std::vector<std::string> depth_split_tags = { "hair", "topwear" };
     std::vector<std::string> lr_split_tags = {
@@ -55,7 +55,7 @@ extern const std::vector<std::string> VALID_BODY_PARTS_V2;
 bool encode_tags(const PipelineConfig & cfg, const std::vector<std::string> & tags,
                  std::vector<float> & ehs, std::vector<float> & pooled);
 
-// stage 2: one apply_layerdiff pass: page RGB (square, res x res) -> per-tag
+// stage 2: one layerdiff pass: page RGB (square, res x res) -> per-tag
 // RGBA layers at page resolution. group_index selects the group embeddings.
 bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
                     const std::vector<float> & ehs, const std::vector<float> & pooled,

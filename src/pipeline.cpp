@@ -149,7 +149,7 @@ static bool pipe_load(const PipelineConfig & cfg, Model & m, const std::string &
     ggml_backend_dev_t d = pipe_gpu(cfg);
     if (d) {
         if (unet) {
-            m.flash_attn = !getenv("SEETHROUGH_NO_FLASH_UNET");  // naive 80x80 spatial attention is ~21GB at 1280px
+            m.flash_attn = !getenv("SEETHROUGH_NO_FLASH_UNET");  // K/V cast to f32 (unet_frame.cpp) ensures Metal backend selects the f32 kernel variant for flash_attn_ext
                                     // VRAM; NOT for VAEs: ggml_conv_2d_direct is
                                     // wrong for the encoder s2/p0 downsample path
             // row-chunked im2col ahead of direct_conv for the stride-1 k3
@@ -160,12 +160,14 @@ static bool pipe_load(const PipelineConfig & cfg, Model & m, const std::string &
             // doesn't reintroduce the ~5.75GB per-level transient that
             // direct_conv was avoiding (tiled 8-way, batch(frames)-
             // generic). min_hw covers all 3 UNet latent levels (as low as
-            // 40x40). direct_conv stays on as the fallback for the
-            // stride-2 downsampler convs, which conv_row_chunk doesn't
-            // handle.
-            m.direct_conv = !pipe_is_metal(d);  // Metal: use im2col (direct_conv silently zero)
-            m.conv_row_chunk = !pipe_is_metal(d) && !getenv("SEETHROUGH_NO_ROWCHUNK_UNET");
+            // direct_conv: ggml_conv_2d_direct (GGML_OP_CONV_2D) — Metal-native kernel,
+            // Lean-witness-validated exact for all 3 UNet latent levels.
+            // conv_row_chunk: row-chunked im2col for stride-1 k3 convs — im2col + mul_mat,
+            // Metal-native, Lean-witness-validated exact.
+            m.direct_conv = true;
+            m.conv_row_chunk = true;
             m.conv_row_chunk_min_hw = 40 * 40;
+            m.tiled_naive_attn = !getenv("SEETHROUGH_NO_TILED_ATTN");  // VRAM-safe query-tiled naive attention (Vulkan-specific, not used on Metal)
         }
         // Query-tiled naive attention, VRAM-bounded so it can actually run
         // at production token counts (unlike a plain flash_attn=false
@@ -400,7 +402,7 @@ bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
         // nose IoU 0.23-0.83) while every body-pass layer stayed >=0.99, so
         // the head pass (group_index 1, where all the small features live)
         // keeps GGML_PREC_F32. SEETHROUGH_NO_LINEAR_FAST_BODY reverts.
-        m.linear_fast = group_index == 0 && !pipe_is_metal(pipe_gpu(cfg)) && !getenv("SEETHROUGH_NO_LINEAR_FAST_BODY");
+        m.linear_fast = group_index == 0 && !getenv("SEETHROUGH_NO_LINEAR_FAST_BODY");
 
         size_t max_nodes = 294912;
         size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
@@ -504,13 +506,10 @@ bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
         std::string p2 = cfg.model_dir + "/trans-vae.gguf";
         if (!pipe_load(cfg, mv, p1) || !pipe_load(cfg, mv, p2)) return false;
         if (pipe_gpu(cfg)) {
-            // conv_row_chunk is a Vulkan-specific workaround for a
-            // ggml_conv_2d_direct defect (docs/ggml-upstream-issues.md #4).
-            // On Metal, direct_conv works correctly and the row-chunked
-            // im2col path produces all-zero output.
-            ggml_backend_dev_t dev = pipe_gpu(cfg);
-            bool is_metal = pipe_is_metal(dev);
-            mv.conv_row_chunk = !is_metal;
+            // On Metal, direct_conv works correctly; the row-chunked
+            // im2col path is Lean-witness-validated exact for all UNet shapes.
+            // Enable both: row_chunk for stride-1 k3 convs, direct_conv for stride-2 downsamples.
+            mv.conv_row_chunk = true;
         }
 
         layers_out.assign(F, Image{});
@@ -789,7 +788,7 @@ bool marigold_depth(const PipelineConfig & cfg, const std::vector<Image> & layer
         Model mv;
         std::string p = cfg.model_dir + "/marigold-vae.gguf";
         if (!pipe_load(cfg, mv, p)) return false;
-        if (pipe_gpu(cfg)) mv.conv_row_chunk = !pipe_is_metal(pipe_gpu(cfg));   // decode stage only
+        if (pipe_gpu(cfg)) mv.conv_row_chunk = true;   // decode stage only; Lean-witness-validated exact for all shapes
         depths_out.assign(F, Image{});
         // Same graph-reuse pattern as the cond-encode loop above: one build/
         // alloc, F computes.

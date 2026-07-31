@@ -188,7 +188,7 @@ ggml_tensor * conv2d(Model & m, ggml_tensor * x, const std::string & pre, int st
         // 0009's production-shape tap analysis already characterized f16
         // conv-activation rounding in this UNet as ordinary noise that
         // shrinks 20x through the up-path; opt-in until IoU-verified here.
-        const ggml_type imt = (w->type == GGML_TYPE_F16 && !st_is_metal_backend() && !getenv("SEETHROUGH_NO_CONV_F16"))
+        const ggml_type imt = (w->type == GGML_TYPE_F16 && !getenv("SEETHROUGH_NO_CONV_F16"))
                                   ? GGML_TYPE_F16 : GGML_TYPE_F32;
         int64_t budget_mb = 2048;
         if (const char * e = getenv("SEETHROUGH_ROWCHUNK_BUDGET_MB")) budget_mb = atoll(e);
@@ -216,12 +216,12 @@ ggml_tensor * conv2d(Model & m, ggml_tensor * x, const std::string & pre, int st
             if (y0 > 0 && y1 < H) {
                 // interior: horizontal pad only — output rows match exactly
                 ggml_tensor * im = ggml_im2col(ctx, w, slab, 1, 1, 1, 0, 1, 1, true,
-                                               (w->type == GGML_TYPE_F16 && !st_is_metal_backend()) ? GGML_TYPE_F16 : GGML_TYPE_F32);
+                                               (w->type == GGML_TYPE_F16) ? GGML_TYPE_F16 : GGML_TYPE_F32);
                 ys = conv_mm(ctx, im, w);
             } else {
                 // edge tiles: full pad then crop the halo rows back out
                 ggml_tensor * im = ggml_im2col(ctx, w, slab, 1, 1, 1, 1, 1, 1, true,
-                                               (w->type == GGML_TYPE_F16 && !st_is_metal_backend()) ? GGML_TYPE_F16 : GGML_TYPE_F32);
+                                               (w->type == GGML_TYPE_F16) ? GGML_TYPE_F16 : GGML_TYPE_F32);
                 ggml_tensor * full = conv_mm(ctx, im, w);
                 ys = ggml_cont(ctx, ggml_view_4d(ctx, full, W, y1 - y0, w->ne[3], N,
                                                  full->nb[1], full->nb[2], full->nb[3],
@@ -244,7 +244,7 @@ ggml_tensor * conv2d(Model & m, ggml_tensor * x, const std::string & pre, int st
     // ggml_conv_2d unconditionally rounds activations to f16 in im2col; for
     // f32 weights (SDXL VAE encoder has activations too large for that) keep
     // the whole conv in f32 instead
-    ggml_type it = (w->type == GGML_TYPE_F16 && !st_is_metal_backend() && !getenv("SEETHROUGH_NO_CONV_F16"))
+    ggml_type it = (w->type == GGML_TYPE_F16 && !getenv("SEETHROUGH_NO_CONV_F16"))
                        ? GGML_TYPE_F16 : GGML_TYPE_F32;
     ggml_tensor * im = ggml_im2col(ctx, w, x, stride, stride, pad, pad, 1, 1, true, it);
     ggml_tensor * r = conv_mm(ctx, im, w);
