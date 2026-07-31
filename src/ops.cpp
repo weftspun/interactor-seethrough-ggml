@@ -127,27 +127,15 @@ ggml_tensor * bias4d(ggml_context * ctx, ggml_tensor * b) {
 // to need it.
 // Metal's f16 GEMM kernels don't accumulate in f32 reliably, causing NaN
 // after a few diffusion steps. Auto-detect Metal backend and cast f16 operands
-// to f32 so Metal uses f32×f32 kernels with f32 accumulation.
-static bool st_is_metal_backend() {
-    static bool cached = false, checked = false;
-    if (checked) return cached;
-    checked = true;
-    size_t n = ggml_backend_dev_count();
-    for (size_t i = 0; i < n; i++) {
-        ggml_backend_dev_t d = ggml_backend_dev_get(i);
-        const char * name = ggml_backend_dev_name(d);
-        if (name && name[0] == 'M' && name[1] == 'T' && name[2] == 'L') {
-            cached = true; return cached;
-        }
-    }
-    return cached;
-}
+// convenience: the GPU backend type is checked at each op dispatch -- no longer
+// needs a separate stub.
 
 ggml_tensor * mul_mat_f32(ggml_context * ctx, ggml_tensor * a, ggml_tensor * b) {
-    if (st_is_metal_backend()) {
-        if (a->type == GGML_TYPE_F16) a = ggml_cast(ctx, a, GGML_TYPE_F32);
-        if (b->type == GGML_TYPE_F16) b = ggml_cast(ctx, b, GGML_TYPE_F32);
-    }
+    // Metal's simdgroup HALF8x8 accumulates in f32 but the f16×f16 matrix
+    // elements can overflow for model weights. Cast f16 operands to f32
+    // so the Metal backend uses f32×f32 matmul (no simdgroup, slower but safe).
+    if (a->type == GGML_TYPE_F16) a = ggml_cast(ctx, a, GGML_TYPE_F32);
+    if (b->type == GGML_TYPE_F16) b = ggml_cast(ctx, b, GGML_TYPE_F32);
     ggml_tensor * r = ggml_mul_mat(ctx, a, b);
     ggml_mul_mat_set_prec(r, GGML_PREC_F32);
     return r;
@@ -291,10 +279,6 @@ ggml_tensor * linear(Model & m, ggml_tensor * x, const std::string & pre) {
     // (conv2d and attention keep their PREC_F32 guards regardless).
     ggml_tensor * y;
     if (m.linear_fast || getenv("SEETHROUGH_LINEAR_FAST")) {
-        if (st_is_metal_backend()) {
-            if (w->type == GGML_TYPE_F16) w = ggml_cast(ctx, w, GGML_TYPE_F32);
-            if (x->type == GGML_TYPE_F16) x = ggml_cast(ctx, x, GGML_TYPE_F32);
-        }
         y = ggml_mul_mat(ctx, w, x);
     } else {
         y = mul_mat_f32(ctx, w, x);
