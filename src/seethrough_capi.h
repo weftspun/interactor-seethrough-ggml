@@ -64,6 +64,14 @@ ST_API double st_witness_check_flat(uint32_t op, uint32_t w, uint32_t h, uint32_
 ST_API double st_witness_check_gemm(uint32_t m, uint32_t n, uint32_t k,
                              uint32_t scale_bits, uint64_t seed);
 
+// Diagnostic probe (attn): real cosine + worst/mean abs diff between the
+// candidate (flash/tiled) and reference (naive) on the same backend, plus
+// optional .bin dumps of both tensors to dump_dir. Returns 0 on success.
+ST_API int st_attn_probe(uint32_t heads, uint32_t tq, uint32_t tk, uint32_t batch,
+                         uint32_t tiled, uint32_t flash, uint64_t seed,
+                         const char * dump_dir,
+                         double * out_cos, double * out_max, double * out_mean);
+
 #ifdef __cplusplus
 }
 #endif
