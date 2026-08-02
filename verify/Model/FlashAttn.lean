@@ -58,8 +58,17 @@ def dotRowAux (Q X : Array (Array Float)) (i j : Nat) : Nat → Float → Float
 def dotRow (Q X : Array (Array Float)) (i j : Nat) : Float :=
   dotRowAux Q X i j ((Q[i]!).size) 0.0
 
-def scoreOf (fb : Nat) (Q K : Array (Array Float)) (i j : Nat) (scale : Float) : Float :=
-  op fb (op fb (dotRow Q K i j) * scale)
+/-- score with faithful hardware emulation: Metal stores Q AND K as f16
+    operands in shared memory (q_t=half even in FA_TYPES_F32), so EACH element
+    is rounded to `fb` bits before the product; the dot accumulates in f32
+    (op fb on the running sum too). `fb` is the *operand* fraction width. -/
+def scoreOf (fb : Nat) (Q K : Array (Array Float)) (i j : Nat) (scale : Float) : Float := Id.run do
+  let d := (Q[i]!).size
+  let mut acc := 0.0
+  for k in [:d] do
+    let qk := op fb (Q[i]![k]! * op fb (K[j]![k]!))
+    acc := acc + qk
+  op fb (op fb acc) * scale
 
 def mkZeros (n : Nat) : Array Float := Id.run do
   let mut a : Array Float := #[]
@@ -166,11 +175,11 @@ def fbLabel : Nat → String
   | n  => "fb" ++ toString n
 
 def run : IO Unit := do
-  let d := 16
+  let d := 32
   let B := 8
   for fb in [53, 23, 10] do
     IO.println s!"--- fraction bits: {fbLabel fb} ---"
-    for T in [32, 64, 128] do
+    for T in [8, 16, 32] do
       let Q := randMat' T d 11
       let K := randMat' T d 22
       let V := randMat' T d 33
