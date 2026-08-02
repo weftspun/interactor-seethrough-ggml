@@ -11,6 +11,8 @@ Uses Slang's `matrix<half, 8, 8>` types which `slangc -target metal`
 lowers to native simdgroup HALF8x8 operations on Apple Silicon.
 -/
 
+namespace Compute.Gemm
+
 def SG : Nat := 8
 def NTX : Nat := 16
 def NTY : Nat := 16
@@ -75,3 +77,5 @@ def emitGemmShader (M N K : SlangExpr) : String :=
 
 def emitGemmShaderLit (M N K : Nat) : String :=
   emitGemmShader (.litUint M) (.litUint N) (.litUint K)
+
+end Compute.Gemm

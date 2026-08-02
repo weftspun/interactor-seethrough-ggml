@@ -15,6 +15,8 @@ the correct Parquet weight tensors.
 Reference: shitagaki-lab/see-through inference scripts.
 -/
 
+namespace Compute.Model
+
 /-- CLIP text encoder (SDXL). -/
 structure CLIPConfig where
   hidden : Nat := 768
@@ -98,11 +100,13 @@ def describeCLIP (cfg : CLIPConfig) : String :=
 
 def describeUNet (cfg : LayerDiffConfig) : String :=
   let levelDesc := cfg.levels.map (fun l => s!"{l.channels}ch({l.attentionLayers}attn)")
-  s!"LayerDiff UNet: {", ".join levelDesc} head_dim={cfg.headDim}"
+  s!"LayerDiff UNet: {String.intercalate ", " levelDesc} head_dim={cfg.headDim}"
 
 def describeVAE (cfg : VAEConfig) : String :=
-  s!"VAE: {cfg.inChannels}→{cfg.outChannels} ch=[{", ".join (cfg.channels.map toString)}]"
+  s!"VAE: {cfg.inChannels}→{cfg.outChannels} ch=[{String.intercalate ", " (cfg.channels.map toString)}]"
 
-#eval describeCLIP (CLIPConfig.mk)
-#eval describeUNet (LayerDiffConfig.mk)
+#eval describeCLIP ({ } : CLIPConfig)
+#eval describeUNet ({ } : LayerDiffConfig)
 #eval describeVAE transVAE
+
+end Compute.Model

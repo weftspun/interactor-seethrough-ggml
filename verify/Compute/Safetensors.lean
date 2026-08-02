@@ -8,6 +8,8 @@ open LeanSlang
 # `Compute.Safetensors` — pure-Lean safetensors reader header parser
 -/
 
+namespace Compute.Safetensors
+
 inductive SfDtype
   | f16 | bf16 | f32
 deriving Repr, BEq, Inhabited
@@ -54,3 +56,5 @@ partial def SfHeader.open (path : System.FilePath) : IO SfHeader := do
   let hdrEnd := 8 + hdrLen
   if hdrEnd > bytes.size then throw (IO.userError s!"sf: header {hdrLen} > file {bytes.size}")
   pure { tensors := [], dataStart := hdrEnd }
+
+end Compute.Safetensors

@@ -8,6 +8,8 @@ open LeanSlang
 # `Compute.Conv2d` — f32×f32 conv2d compute shader
 -/
 
+namespace Compute.Conv2d
+
 /-- Direct conv2d: one thread per output element.
     out[n, oc, oh, ow] = Σ_c Σ_kh Σ_kw in[n, c, oh*stride + kh, ow*stride + kw] * w[c, oc, kh, kw] -/
 def conv2dShader (BM BN : Nat) (OC OH OW C : SlangExpr) (KH KW stride pad : Nat) : SlangShaderModule :=
@@ -57,3 +59,5 @@ def conv2dShader (BM BN : Nat) (OC OH OW C : SlangExpr) (KH KW stride pad : Nat)
 
 def emitConv2dShader (BM BN : Nat) (OC OH OW C : SlangExpr) (KH KW stride pad : Nat) : String :=
   LeanSlang.emit (conv2dShader BM BN OC OH OW C KH KW stride pad)
+
+end Compute.Conv2d

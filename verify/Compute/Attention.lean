@@ -18,6 +18,8 @@ Uses shared memory for the attention matrix to avoid O(T²) global
 writes. Only the output is written back.
 -/
 
+namespace Compute.Attention
+
 /-- Build a single-head attention shader.
 
 Parameters:
@@ -68,10 +70,12 @@ def attnShader (BM BN : Nat) (T d : SlangExpr) : SlangShaderModule :=
         , -- Subtract max and exponentiate
           .declare (.scalar .float) "rowSum" (some (.litFloat 0.0))
         , .forCount "j" (.litUint 0) (.var "T")
-            [ let idx := .bin "+" (.var "row") (.bin "*" (.var "j") (.litUint BM))
-            , .assign (.index (.var "sAttn") idx)
-                (.call "exp" [.bin "-" (.index (.var "sAttn") idx) (.var "rowMax")])
-            , .assign (.var "rowSum") (.bin "+" (.var "rowSum") (.index (.var "sAttn") idx)) ]
+            [ .assign
+                (.index (.var "sAttn") (.bin "+" (.var "row") (.bin "*" (.var "j") (.litUint BM))))
+                (.call "exp" [.bin "-" (.bin "+" (.var "row") (.bin "*" (.var "j") (.litUint BM))) (.var "rowMax")])
+            , .assign
+                (.var "rowSum")
+                (.bin "+" (.var "rowSum") (.index (.var "sAttn") (.bin "+" (.var "row") (.bin "*" (.var "j") (.litUint BM))))) ]
         , -- Normalize
           .forCount "j" (.litUint 0) (.var "T")
             [ .assign (.index (.var "sAttn") (.bin "+" (.var "row") (.bin "*" (.var "j") (.litUint BM))))
@@ -87,9 +91,11 @@ def attnShader (BM BN : Nat) (T d : SlangExpr) : SlangShaderModule :=
                     (.index (.var "sAttn") (.bin "+" (.var "row") (.bin "*" (.var "j") (.litUint BM))))
                     (.call "V" [.bin "+" (.bin "*" (.var "j") (.var "d")) (.var "col")]))) ]
         , -- Write output
-          .assign (.index (.var "O") (.bin "+" (.var "row") (.bin "*" (.var "T") (.var "d")) (.bin "+" (.bin "*" (.var "col") (.var "d")) (.var "row"))))
+          .assign (.index (.var "O") (.bin "+" (.bin "*" (.var "row") (.var "d")) (.var "col")))
                    (.var "sum")
         ]
       }
     ]
   }
+
+end Compute.Attention

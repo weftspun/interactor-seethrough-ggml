@@ -8,6 +8,8 @@ open LeanSlang
 # `Compute.Norm` — normalization compute shaders (layer norm, group norm)
 -/
 
+namespace Compute.Norm
+
 /-- Layer normalization: y = (x - μ) / σ * γ + β -/
 def layerNormShader (BM : Nat) (C : SlangExpr) : SlangShaderModule :=
   { globals := [
@@ -63,8 +65,10 @@ def siluShader (BM : Nat) : SlangShaderModule :=
           .declare (.scalar .uint) "tid" (some (.index (.var "dtid") (.litUint 0)))
         , .declare (.scalar .float) "v" (some (.index (.var "x") (.var "tid")))
         , .assign (.index (.var "x") (.var "tid"))
-            (.bin "*" (.var "v") (.bin "/" (.litFloat 1.0) (.bin "+" (.litFloat 1.0) (.call "exp" [.bin "-" (.var "v")]))))
+            (.bin "*" (.var "v") (.bin "/" (.litFloat 1.0) (.bin "+" (.litFloat 1.0) (.call "exp" [.bin "-" (.litFloat 0.0) (.var "v")]))))
         ]
       }
     ]
   }
+
+end Compute.Norm
