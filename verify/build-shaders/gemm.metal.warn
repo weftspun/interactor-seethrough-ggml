@@ -1,0 +1,108 @@
+warning[E31104]: explicit binding of uniform discouraged
+  --> gemm.slang:11:6
+   |
+11 | uint M;
+   |      ^ Explicit binding of uniform locations is discouraged. Prefer 'ConstantBuffer<uint>' over 'uniform uint'
+---'
+warning[E39019]: implicit global shader parameter
+  --> gemm.slang:11:6
+   |
+11 | uint M;
+   |      ^ 'M' is implicitly a global shader parameter, not a global variable. If a global variable is intended, add the 'static' modifier. If a uniform shader parameter is intended, add the 'uniform' modifier to silence this warning.
+---'
+warning[E39071]: binding attribute ignored
+  --> gemm.slang:11:6
+   |
+11 | uint M;
+   |      ^ binding attribute on uniform 'M' will be ignored since it will be packed into the default constant buffer at descriptor set 0 binding 0. To use explicit bindings, declare the uniform inside a constant buffer.
+---'
+warning[E31104]: explicit binding of uniform discouraged
+  --> gemm.slang:13:6
+   |
+13 | uint N;
+   |      ^ Explicit binding of uniform locations is discouraged. Prefer 'ConstantBuffer<uint>' over 'uniform uint'
+---'
+warning[E39019]: implicit global shader parameter
+  --> gemm.slang:13:6
+   |
+13 | uint N;
+   |      ^ 'N' is implicitly a global shader parameter, not a global variable. If a global variable is intended, add the 'static' modifier. If a uniform shader parameter is intended, add the 'uniform' modifier to silence this warning.
+---'
+warning[E39071]: binding attribute ignored
+  --> gemm.slang:13:6
+   |
+13 | uint N;
+   |      ^ binding attribute on uniform 'N' will be ignored since it will be packed into the default constant buffer at descriptor set 0 binding 0. To use explicit bindings, declare the uniform inside a constant buffer.
+---'
+warning[E31104]: explicit binding of uniform discouraged
+  --> gemm.slang:15:6
+   |
+15 | uint K;
+   |      ^ Explicit binding of uniform locations is discouraged. Prefer 'ConstantBuffer<uint>' over 'uniform uint'
+---'
+warning[E39019]: implicit global shader parameter
+  --> gemm.slang:15:6
+   |
+15 | uint K;
+   |      ^ 'K' is implicitly a global shader parameter, not a global variable. If a global variable is intended, add the 'static' modifier. If a uniform shader parameter is intended, add the 'uniform' modifier to silence this warning.
+---'
+warning[E39071]: binding attribute ignored
+  --> gemm.slang:15:6
+   |
+15 | uint K;
+   |      ^ binding attribute on uniform 'K' will be ignored since it will be packed into the default constant buffer at descriptor set 0 binding 0. To use explicit bindings, declare the uniform inside a constant buffer.
+---'
+warning[E31104]: explicit binding of uniform discouraged
+  --> gemm.slang:11:6
+   |
+11 | uint M;
+   |      ^ Explicit binding of uniform locations is discouraged. Prefer 'ConstantBuffer<uint>' over 'uniform uint'
+---'
+warning[E39019]: implicit global shader parameter
+  --> gemm.slang:11:6
+   |
+11 | uint M;
+   |      ^ 'M' is implicitly a global shader parameter, not a global variable. If a global variable is intended, add the 'static' modifier. If a uniform shader parameter is intended, add the 'uniform' modifier to silence this warning.
+---'
+warning[E39071]: binding attribute ignored
+  --> gemm.slang:11:6
+   |
+11 | uint M;
+   |      ^ binding attribute on uniform 'M' will be ignored since it will be packed into the default constant buffer at descriptor set 0 binding 0. To use explicit bindings, declare the uniform inside a constant buffer.
+---'
+warning[E31104]: explicit binding of uniform discouraged
+  --> gemm.slang:13:6
+   |
+13 | uint N;
+   |      ^ Explicit binding of uniform locations is discouraged. Prefer 'ConstantBuffer<uint>' over 'uniform uint'
+---'
+warning[E39019]: implicit global shader parameter
+  --> gemm.slang:13:6
+   |
+13 | uint N;
+   |      ^ 'N' is implicitly a global shader parameter, not a global variable. If a global variable is intended, add the 'static' modifier. If a uniform shader parameter is intended, add the 'uniform' modifier to silence this warning.
+---'
+warning[E39071]: binding attribute ignored
+  --> gemm.slang:13:6
+   |
+13 | uint N;
+   |      ^ binding attribute on uniform 'N' will be ignored since it will be packed into the default constant buffer at descriptor set 0 binding 0. To use explicit bindings, declare the uniform inside a constant buffer.
+---'
+warning[E31104]: explicit binding of uniform discouraged
+  --> gemm.slang:15:6
+   |
+15 | uint K;
+   |      ^ Explicit binding of uniform locations is discouraged. Prefer 'ConstantBuffer<uint>' over 'uniform uint'
+---'
+warning[E39019]: implicit global shader parameter
+  --> gemm.slang:15:6
+   |
+15 | uint K;
+   |      ^ 'K' is implicitly a global shader parameter, not a global variable. If a global variable is intended, add the 'static' modifier. If a uniform shader parameter is intended, add the 'uniform' modifier to silence this warning.
+---'
+warning[E39071]: binding attribute ignored
+  --> gemm.slang:15:6
+   |
+15 | uint K;
+   |      ^ binding attribute on uniform 'K' will be ignored since it will be packed into the default constant buffer at descriptor set 0 binding 0. To use explicit bindings, declare the uniform inside a constant buffer.
+---'

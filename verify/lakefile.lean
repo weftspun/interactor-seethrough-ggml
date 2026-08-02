@@ -34,6 +34,9 @@ lean_exe compute_compile where
   moreLinkArgs := #[
     s!"-Wl,-rpath,{(__dir__ / ".lake" / "packages" / "LeanSlang" / "vendor" / "lib").toString}"]
 
+lean_exe emit_shaders where
+  root := `EmitShaders
+
 lean_exe quant_design where
   root := `QuantDesign
   moreLinkArgs := seethroughCLib

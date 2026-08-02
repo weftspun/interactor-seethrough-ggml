@@ -41,9 +41,31 @@ Critical-path ranking by slack: **G (21.67h) and D (10.67h) are the long
 poles.** G is the mid_block temporal chain-integration blocker (cos 0.9958
 at chain vs 1.0 isolated). D is the missing GPU execution harness.
 
+## D SHORTCUT — same-SOURCE / three-target (verified 2026-08-01)
+
+The lean-slang-gpu-compute skill's core principle collapses D: the GPU
+harness does NOT hand-build kernels. The same Lean-emitted `.slang` file
+compiles to all three backends, so the CPU C++ harness is the validation
+anchor and Metal/SPIR-V are the execution side — they agree by construction.
+Verified on the REAL emitted shaders (compute_verify → emit_shaders):
+
+| target | cmd | result |
+|--------|-----|--------|
+| SPIR-V | `slangc -target spirv` | gemm 3316 B — **matches in-process FFI byte-for-byte** |
+| Metal  | `slangc -target metal` (+xcrun metal → .metallib) | gemm.metallib 4922 B |
+| C++    | `slangc -target cpp` | FAILS: `GroupMemoryBarrierWithGroupSync` is GPU-only |
+
+CPU cpp target requires a barrier-free per-thread variant (documented skill
+constraint). So D becomes: emit → `slangc` three targets → a thin driver that
+dispatches the .metallib/.spv and reads back vs the ggml oracle tap. The
+Fast with Accelerate CPU oracle (E) is the parity reference; only the shader
+ships in release.
+
 ## Follow-through (in this session, starting now)
 
 1. C — prove the real Gemm/Conv2d/Attn/Norm shaders compile to SPIR-V
-   through the FFI (not just fixtures). Small, concrete, unblocks D.
-2. D — GPU execution harness.
-...
+   through the FFI (not just fixtures). DONE (commit c5bec305) + fixed the
+   attention `V(...)`→`V[...]` subscript bug.
+2. D — same-SOURCE three-target proven: gemm → metal/spirv/metallib.
+   Remaining: thin dispatch driver + readback vs oracle tap.
+3. G — mid_block temporal chain integration (long pole).
