@@ -29,6 +29,11 @@ lean_lib Compute where
 lean_exe compute_verify where
   root := `ComputeVerify
 
+lean_exe compute_compile where
+  root := `ComputeCompile
+  moreLinkArgs := #[
+    s!"-Wl,-rpath,{(__dir__ / ".lake" / "packages" / "LeanSlang" / "vendor" / "lib").toString}"]
+
 lean_exe quant_design where
   root := `QuantDesign
   moreLinkArgs := seethroughCLib

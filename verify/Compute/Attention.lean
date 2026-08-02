@@ -89,7 +89,7 @@ def attnShader (BM BN : Nat) (T d : SlangExpr) : SlangShaderModule :=
                 (.bin "+" (.var "sum")
                   (.bin "*"
                     (.index (.var "sAttn") (.bin "+" (.var "row") (.bin "*" (.var "j") (.litUint BM))))
-                    (.call "V" [.bin "+" (.bin "*" (.var "j") (.var "d")) (.var "col")]))) ]
+                    (.index (.var "V") (.bin "+" (.bin "*" (.var "j") (.var "d")) (.var "col"))))) ]
         , -- Write output
           .assign (.index (.var "O") (.bin "+" (.bin "*" (.var "row") (.var "d")) (.var "col")))
                    (.var "sum")
