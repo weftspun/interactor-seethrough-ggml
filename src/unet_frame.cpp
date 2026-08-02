@@ -49,15 +49,17 @@ ggml_tensor * attn_tokens(Model & m, ggml_tensor * q_src, ggml_tensor * kv_src,
     } else if (m.flash_attn) {
         // ggml_flash_attn_ext: q/k/v all (hd, T, H, B), v NOT transposed,
         // scale applied internally; result contiguous (hd*H, Tq, B).
-        // K/V stay F16 (the f16 kernel's accumulator is already f32 — see
-        // FA_TYPES in ggml-metal.metal, where qk/s/o types are float8x8).
-        // Widening K/V to F32 costs 2x KV bandwidth without changing the
-        // f32 accumulation, so it is not done here.
+        // Cast K/V to F16 to select the f16-storage kernel variant (K/V
+        // stored as half in shared memory instead of float). The f16 variant's
+        // accumulator (qk/softmax/output) is still f32 (FA_TYPES' qk_t,
+        // s_t, o_t are all float8x8), so accumulation is exact while K/V
+        // memory bandwidth halves vs the F32 variant.
         q = ggml_cont(ctx, ggml_permute(ctx, ggml_reshape_4d(ctx, q, hd, n_head, Tq, B), 0, 2, 1, 3));
-        k = ggml_cont(ctx, ggml_permute(ctx, ggml_reshape_4d(ctx, k, hd, n_head, Tk, B), 0, 2, 1, 3));
-        v = ggml_cont(ctx, ggml_permute(ctx, ggml_reshape_4d(ctx, v, hd, n_head, Tk, B), 0, 2, 1, 3));
+        k = ggml_cast(ctx, ggml_cont(ctx, ggml_permute(ctx, ggml_reshape_4d(ctx, k, hd, n_head, Tk, B), 0, 2, 1, 3)), GGML_TYPE_F16);
+        v = ggml_cast(ctx, ggml_cont(ctx, ggml_permute(ctx, ggml_reshape_4d(ctx, v, hd, n_head, Tk, B), 0, 2, 1, 3)), GGML_TYPE_F16);
         ggml_tensor * fa = ggml_flash_attn_ext(ctx, q, k, v, nullptr,
                                                1.0f / sqrtf((float) hd), 0.0f, 0.0f);
+        ggml_flash_attn_ext_set_prec(fa, GGML_PREC_F32);
         kqv = ggml_reshape_3d(ctx, fa, C, Tq, B);
     } else {
         q = ggml_scale(ctx, q, 1.0f / sqrtf((float) hd));
