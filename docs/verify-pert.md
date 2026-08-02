@@ -73,6 +73,26 @@ work is: extend the op set (GEMM already exists in gemm_witness) to conv/mha/
 norm through the ggml backend, and gate cos>0.999 vs the ggml oracle on the GPU
 result. Only the shader math ships; ggml Metal is the dispatcher.
 
+### D execution — validated on M2 Pro, full op set (2026-08-01)
+
+Drove the real witness path (seethrough_c, ggml Metal backend) on Apple M2 Pro:
+
+```
+conv2d direct 160x160 c320 oc320 s1   worst=0.0031  CONTAINED
+conv2d rowchunk 1280x1280 c4 oc4      worst=0.0000  CONTAINED
+attn tiled t1600 tk1600 b13 h10       worst=0.0000  CONTAINED
+gemm 64x64x64 scale0                  worst=0.0417  CONTAINED
+gemm 128x128x64 scale8                worst=0.0417  CONTAINED
+attn flash t1600 tk1600 b13 h10       worst=2.13-2.38  WITNESS (>1)  <-- REAL DEFECT
+```
+
+The one defect isolated is **flash attention at production shape**: worst ~2.1-2.4
+across seeds (7/99/1234), stable. This is the skill's known issue: "Metal
+flash_attn_ext kernel has precision issues at production UNet shapes (interval
+violation > 1.0 on witness gate). Cast K/V to f32 to select the f32 kernel
+variant." conv (direct+rowchunk), tiled attn, and both gemm scales are
+contained. The D→F witness gate is working: it caught the documented defect.
+
 ## Follow-through (in this session, starting now)
 
 1. C — prove the real Gemm/Conv2d/Attn/Norm shaders compile to SPIR-V
