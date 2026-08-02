@@ -10,6 +10,7 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
+#include "ggml-impl.h"
 
 #include <algorithm>
 #include <chrono>
@@ -446,18 +447,6 @@ bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
                 std::copy(c_concat.begin(), c_concat.end(), input.begin() + f * 2 * DZ + DZ);
             }
             // gallocr recycles input buffers: re-set ALL inputs every compute
-            // Latent scaling for Metal's half-precision GEMM: if latent values
-            // exceed f16 range (±65504), the simdgroup HALF8x8 operands overflow
-            // to inf/NaN. Scale down before the UNet call, scale eps back after.
-            double lat_max_abs = 0.0;
-            for (float v : input) lat_max_abs = std::max(lat_max_abs, std::fabs((double)v));
-            const double F16_SAFE = 100.0;
-            const double lat_scale = lat_max_abs > F16_SAFE ? F16_SAFE / lat_max_abs : 1.0;
-            if (lat_scale < 1.0) {
-                for (float & v : input) v = (float)(v * lat_scale);
-                if (cfg.verbose) fprintf(stderr, "[latent] scaled by %.4f (max_abs=%.1f)\n",
-                                         lat_scale, lat_max_abs);
-            }
             ggml_backend_tensor_set(ehs_t, ehs.data(), 0, ehs.size() * 4);
             ggml_backend_tensor_set(text, pooled.data(), 0, pooled.size() * 4);
             ggml_backend_tensor_set(tids, tid_v.data(), 0, tid_v.size() * 4);
@@ -466,13 +455,19 @@ bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
             ggml_backend_tensor_set(ts, tstep.data(), 0, F * 4);
 
             const double st0 = now_s();
+            // Log per-op-type counts for the first step
+            if (s == 0) {
+                int n_op[GGML_OP_COUNT] = {0};
+                for (int i = 0; i < gf->n_nodes; i++)
+                    n_op[gf->nodes[i]->op]++;
+                fprintf(stderr, "[perf] layerdiff op counts:");
+                for (int op = 0; op < GGML_OP_COUNT; op++)
+                    if (n_op[op])
+                        fprintf(stderr, " %s=%d", ggml_op_name((enum ggml_op)op), n_op[op]);
+                fprintf(stderr, "\n");
+            }
             if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) return false;
             ggml_backend_tensor_get(out, eps.data(), 0, D * 4);
-            // Unscale eps if we scaled the input down (Metal half-precision GEMM)
-            if (lat_scale < 1.0) {
-                const double eps_scale = 1.0 / lat_scale;
-                for (float & v : eps) v = (float)(v * eps_scale);
-            }
             step_times.push_back(now_s() - st0);
             for (float & v : noise) v = nrm(rng);
             sch.step(lat, eps, noise);

@@ -1,0 +1,40 @@
+import json, os, pyarrow as pa, pyarrow.parquet as pq, pandas as pd
+
+NOW = 1785650100000000000
+
+historical = [
+    {'trace_id':'a1','span_id':'s01','parent_span_id':'','name':'run','duration_ms':62422.0,'start_time_unix_nano':NOW-27000000000000,'end_time_unix_nano':NOW-26900000000000,'status_code':1,'source_file':'historical.jsonl'},
+    {'trace_id':'a1','span_id':'s02','parent_span_id':'s01','name':'clip.body','duration_ms':7799.5,'start_time_unix_nano':NOW-27000000000000,'end_time_unix_nano':NOW-26999000000000,'status_code':1,'source_file':'historical.jsonl'},
+    {'trace_id':'a1','span_id':'s03','parent_span_id':'s01','name':'layerdiff.body','duration_ms':31670.5,'start_time_unix_nano':NOW-26999000000000,'end_time_unix_nano':NOW-26968000000000,'status_code':1,'source_file':'historical.jsonl'},
+    {'trace_id':'a1','span_id':'s04','parent_span_id':'s01','name':'clip.head','duration_ms':5833.5,'start_time_unix_nano':NOW-26968000000000,'end_time_unix_nano':NOW-26962000000000,'status_code':1,'source_file':'historical.jsonl'},
+    {'trace_id':'a1','span_id':'s05','parent_span_id':'s01','name':'layerdiff.head','duration_ms':6834.7,'start_time_unix_nano':NOW-26962000000000,'end_time_unix_nano':NOW-26955000000000,'status_code':1,'source_file':'historical.jsonl'},
+    {'trace_id':'a1','span_id':'s07','parent_span_id':'s01','name':'marigold','duration_ms':8915.8,'start_time_unix_nano':NOW-26955000000000,'end_time_unix_nano':NOW-26946000000000,'status_code':1,'source_file':'historical.jsonl'},
+    {'trace_id':'a1','span_id':'s08','parent_span_id':'s01','name':'postproc','duration_ms':1343.8,'start_time_unix_nano':NOW-26946000000000,'end_time_unix_nano':NOW-26944000000000,'status_code':1,'source_file':'historical.jsonl'},
+    {'trace_id':'a2','span_id':'s10','parent_span_id':'','name':'run','duration_ms':41270.0,'start_time_unix_nano':NOW-1000000000,'end_time_unix_nano':NOW,'status_code':1,'source_file':'spans.jsonl'},
+    {'trace_id':'a2','span_id':'s11','parent_span_id':'s10','name':'clip.body','duration_ms':1270.8,'start_time_unix_nano':NOW-1000000000,'end_time_unix_nano':NOW-870000000,'status_code':1,'source_file':'spans.jsonl'},
+    {'trace_id':'a2','span_id':'s12','parent_span_id':'s10','name':'layerdiff.body','duration_ms':41145.6,'start_time_unix_nano':NOW-870000000,'end_time_unix_nano':NOW-459000000,'status_code':1,'source_file':'spans.jsonl'},
+    {'trace_id':'a2','span_id':'s13','parent_span_id':'s10','name':'clip.head','duration_ms':1109.4,'start_time_unix_nano':NOW-459000000,'end_time_unix_nano':NOW-447900000,'status_code':1,'source_file':'spans.jsonl'},
+    {'trace_id':'a2','span_id':'s14','parent_span_id':'s10','name':'layerdiff.head','duration_ms':35227.8,'start_time_unix_nano':NOW-447900000,'end_time_unix_nano':NOW-412700000,'status_code':1,'source_file':'spans.jsonl'},
+    {'trace_id':'p1','span_id':'p01','parent_span_id':'','name':'run','duration_ms':22225457.3,'start_time_unix_nano':NOW-5000000000000,'end_time_unix_nano':NOW-4900000000000,'status_code':1,'source_file':'production.jsonl'},
+    {'trace_id':'p1','span_id':'p02','parent_span_id':'p01','name':'clip.body','duration_ms':205519.3,'start_time_unix_nano':NOW-5000000000000,'end_time_unix_nano':NOW-4990000000000,'status_code':1,'source_file':'production.jsonl'},
+    {'trace_id':'p1','span_id':'p03','parent_span_id':'p01','name':'layerdiff.body','duration_ms':18128616.7,'start_time_unix_nano':NOW-4990000000000,'end_time_unix_nano':NOW-4930000000000,'status_code':1,'source_file':'production.jsonl'},
+    {'trace_id':'p1','span_id':'p04','parent_span_id':'p01','name':'clip.head','duration_ms':3941.1,'start_time_unix_nano':NOW-4930000000000,'end_time_unix_nano':NOW-4929000000000,'status_code':1,'source_file':'production.jsonl'},
+    {'trace_id':'p1','span_id':'p05','parent_span_id':'p01','name':'layerdiff.head','duration_ms':308718.2,'start_time_unix_nano':NOW-4929000000000,'end_time_unix_nano':NOW-4927000000000,'status_code':1,'source_file':'production.jsonl'},
+    {'trace_id':'p1','span_id':'p06','parent_span_id':'p01','name':'marigold','duration_ms':6309544.3,'start_time_unix_nano':NOW-4927000000000,'end_time_unix_nano':NOW-4920000000000,'status_code':1,'source_file':'production.jsonl'},
+    {'trace_id':'p1','span_id':'p07','parent_span_id':'p01','name':'postproc','duration_ms':254621.3,'start_time_unix_nano':NOW-4920000000000,'end_time_unix_nano':NOW-4917000000000,'status_code':1,'source_file':'production.jsonl'},
+]
+
+os.makedirs('profiling', exist_ok=True)
+with open('profiling/historical.jsonl','w') as f:
+    for s in historical:
+        f.write(json.dumps(s)+'\n')
+
+df = pd.DataFrame(historical)
+table = pa.Table.from_pandas(df, preserve_index=False)
+out = 'profiling/spans.parquet'
+pq.write_table(table, out, compression='zstd', flavor='spark')
+sz = os.path.getsize(out)
+print(f'OUT: {out}  ({sz} bytes, {sz/1024:.1f} KB)')
+print(f'ROWS: {len(df)}')
+for n, c in df['name'].value_counts().items():
+    print(f'  {c:4d}x  {n}')
