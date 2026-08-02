@@ -102,6 +102,11 @@ target_link_libraries(psd_layers PRIVATE Psd)
 target_include_directories(psd_layers PRIVATE src stb)
 target_sources(psd_layers PRIVATE src/image_utils.cpp)
 
+# Attention backend speed benchmark (CPU Accelerate vs Metal flash) - a
+# steady-state timing harness for the parity invariant's performance leg.
+add_executable(attn_bench benchmarks/attn_speed.cpp)
+target_link_libraries(attn_bench PRIVATE seethrough)
+
 # --- picoquic + picotls + mbedtls: vendored from fire/webtransportd
 # (thirdparty/{picoquic,picotls,mbedtls}, commit b53faa2), same recipe as
 # weft-warp-loop's flow-toolchain/CMakeLists.txt -- EXCEPT sockloop.c/
