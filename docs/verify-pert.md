@@ -56,10 +56,22 @@ Verified on the REAL emitted shaders (compute_verify → emit_shaders):
 | C++    | `slangc -target cpp` | FAILS: `GroupMemoryBarrierWithGroupSync` is GPU-only |
 
 CPU cpp target requires a barrier-free per-thread variant (documented skill
-constraint). So D becomes: emit → `slangc` three targets → a thin driver that
-dispatches the .metallib/.spv and reads back vs the ggml oracle tap. The
-Fast with Accelerate CPU oracle (E) is the parity reference; only the shader
-ships in release.
+constraint).
+
+### D execution model — through the ggml op graph, NOT a bespoke Metal driver
+
+D does NOT build a custom MTLDevice command-buffer driver. The hardware
+execution is delegated to the **ggml backend**, which owns the Metal dispatch,
+buffer set/get, and readback. This is the `gemm_witness.cpp` pattern already in
+`src/`: build the ggml graph, init the GPU (Metal) backend, `tensor_set` inputs,
+`ggml_backend_graph_compute`, `tensor_get` results — and run the SAME graph on
+the CPU backend as the reference, then compare.
+
+So "execution" = driving the exported kernel's math through ggml ops on the
+Metal backend + readback, NOT authoring Metal command buffers. The remaining D
+work is: extend the op set (GEMM already exists in gemm_witness) to conv/mha/
+norm through the ggml backend, and gate cos>0.999 vs the ggml oracle on the GPU
+result. Only the shader math ships; ggml Metal is the dispatcher.
 
 ## Follow-through (in this session, starting now)
 
