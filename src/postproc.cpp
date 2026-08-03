@@ -532,7 +532,13 @@ void further_extr_parts(std::map<std::string, Part> & parts, const Image & fullp
             }
             rank++;
         }
-        const char * ear_order[] = { "ears", "earl", "earr" };
+        // "ears" is in lr_split_tags, so by this point tag_lr_split has renamed
+        // it to "ears-l"/"ears-r" (this port's -l/-r suffix, vs upstream's
+        // earl/earr). The clamp targeted the upstream names and so silently
+        // never matched, leaving ears at their raw (too-near) depth in front of
+        // the face -- the reference PSD clamps them just behind it. Target the
+        // actual names, keeping bare "ears" for the --no-split-lr case.
+        const char * ear_order[] = { "ears", "ears-l", "ears-r" };
         rank = 0;
         for (const char * t : ear_order) {
             auto it = parts.find(t);
