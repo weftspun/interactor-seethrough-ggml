@@ -22,7 +22,7 @@ cat marigold-unet.gguf.zst.part* | zstd -d -o marigold-unet.gguf
 rm *.zst.part*
 cmake -B build -G Ninja -DGGML_VULKAN=ON && cmake --build build
 # PNG, JPEG, BMP, TGA, GIF, and PSD are supported by `see-through.cpp`.
-./build/see-through -m models -i in.png -o out.psd
+./build/see-through -m models -i art/concept/anime_with_caption_cc0_0023.jpg -o art/concept/anime_with_caption_cc0_0023.psd
 # `-o` must end in `.psd`. Produces a flat, layered `out.psd` (plus an
 # `out_depth.psd` companion and an `out.psd.json` metadata sidecar), matching
 # upstream's `dump_parts_psd`.
