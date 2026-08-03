@@ -216,19 +216,16 @@ static bool pipe_load(const PipelineConfig & cfg, Model & m, const std::string &
         // (disable_broken_coopmat2() above, done automatically for every
         // entry point) drops every one of those violations to <0.07. With
         // that fixed at the source, the original "Lean-witness-validated
-        // exact for layerdiff-unet's shapes" claim held for flash_attn, so
-        // flash had been the layerdiff default. But flash_attn's compute
-        // buffer scales with the full per-frame attention batched over frames
-        // (~18.4GB at res=1280) and OOMs a 24GB GPU well before the upstream
-        // resolution=1280. Make the VRAM-bounded query-tiled naive path the
-        // layerdiff default instead: it holds each kq chunk to a fixed budget
-        // regardless of token count, so the pass survives higher resolutions
-        // without OOM. Tiled is Lean-witness-exact vs CPU ground truth at
-        // these shapes (docs #4), just slower than flash, so this trades some
-        // speed for headroom. --flash-attn-layerdiff opts back into flash_attn
-        // (e.g. at res<=768 where its buffer still fits) for A/B.
+        // exact for layerdiff-unet's shapes" claim holds for flash_attn.
+        // flash was briefly swapped for the query-tiled naive path because
+        // res=1280 OOM'd -- but the real 1280 hog was the conv im2col, not
+        // attention (the row-chunk budget bounds it now). With that fixed,
+        // flash fits at 1280 and is ~30% faster than tiled (body 128 vs 185s,
+        // head 115 vs 162s at 1280) while matching its output (mean
+        // depth_median diff 6e-4). So flash is the layerdiff default again;
+        // --tiled-attn-layerdiff opts back into the slower naive path for A/B.
         if (unet && path.find("layerdiff-unet") != std::string::npos &&
-            cfg.flash_attn_layerdiff) {
+            !cfg.tiled_attn_layerdiff) {
             m.tiled_naive_attn = false;
         }
         // Token-tile the layerdiff UNet's GEGLU feed-forward to keep its f32

@@ -56,7 +56,9 @@ struct PipelineConfig {
     bool linear_fast = false;           // --linear-fast: fast lin() everywhere
     bool linear_fast_body = true;       // --no-linear-fast-body
     bool tiled_attn = true;             // --no-tiled-attn (Vulkan VRAM path)
-    bool flash_attn_layerdiff = false;  // --flash-attn-layerdiff
+    bool tiled_attn_layerdiff = false;  // --tiled-attn-layerdiff: opt into the
+                                        // slower query-tiled naive attention
+                                        // (flash is the faster default now)
     int  decode_batch = 1;              // --decode-batch N (frames per graph)
 };
 
