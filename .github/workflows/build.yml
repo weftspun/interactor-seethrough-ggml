@@ -61,7 +61,6 @@ jobs:
           fi
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DGGML_VULKAN=${{ matrix.backend == 'vulkan' && 'ON' || 'OFF' }} \
-            -DSEETHROUGH_BUILD_H3_SERVER=ON \
             -DCMAKE_PREFIX_PATH="$extra_prefix"
 
       - name: Sanity-check glslc (Windows Vulkan diagnostic)
@@ -82,10 +81,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          for t in see-through see-through-server-h3; do
-            for ext in "" ".exe"; do
-              if [ -f "build/$t$ext" ]; then cp "build/$t$ext" dist/; fi
-            done
+          for ext in "" ".exe"; do
+            if [ -f "build/see-through$ext" ]; then cp "build/see-through$ext" dist/; fi
           done
           for lib in seethrough_c see_through_c; do
             for ext in .so .dylib .dll; do
