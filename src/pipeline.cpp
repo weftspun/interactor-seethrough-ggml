@@ -202,7 +202,11 @@ static bool pipe_load(const PipelineConfig & cfg, Model & m, const std::string &
         // tiled_naive_attn is a Vulkan-specific VRAM workaround. On Metal
         // it produces zero output (same root cause as conv_row_chunk).
         bool is_metal = pipe_is_metal(d);
-        m.tiled_naive_attn = !is_metal && !getenv("SEETHROUGH_NO_TILED_ATTN");
+        m.tiled_naive_attn = !is_metal && cfg.tiled_attn;
+        m.conv_f16 = cfg.conv_f16;
+        m.rowchunk_budget_mb = cfg.rowchunk_budget_mb;
+        m.vae_tile = cfg.vae_tile;
+        m.linear_fast_all = cfg.linear_fast;
         // A later re-run of the Lean kernel-witness gate (verify/KernelGate,
         // 2026-07-20) found flash_attn_ext failing at layerdiff-unet's
         // production shapes (t1600/t4096/t6400 self-attention, 77-token
@@ -222,10 +226,10 @@ static bool pipe_load(const PipelineConfig & cfg, Model & m, const std::string &
         // regardless of token count, so the pass survives higher resolutions
         // without OOM. Tiled is Lean-witness-exact vs CPU ground truth at
         // these shapes (docs #4), just slower than flash, so this trades some
-        // speed for headroom. SEETHROUGH_FLASH_ATTN_LAYERDIFF opts back into
-        // flash_attn (e.g. at res<=768 where its buffer still fits) for A/B.
+        // speed for headroom. --flash-attn-layerdiff opts back into flash_attn
+        // (e.g. at res<=768 where its buffer still fits) for A/B.
         if (unet && path.find("layerdiff-unet") != std::string::npos &&
-            getenv("SEETHROUGH_FLASH_ATTN_LAYERDIFF")) {
+            cfg.flash_attn_layerdiff) {
             m.tiled_naive_attn = false;
         }
         return m.load_backend(path.c_str(), ggml_backend_dev_buffer_type(d));
@@ -412,7 +416,7 @@ bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
         // nose IoU 0.23-0.83) while every body-pass layer stayed >=0.99, so
         // the head pass (group_index 1, where all the small features live)
         // keeps GGML_PREC_F32. SEETHROUGH_NO_LINEAR_FAST_BODY reverts.
-        m.linear_fast = group_index == 0 && !getenv("SEETHROUGH_NO_LINEAR_FAST_BODY");
+        m.linear_fast = cfg.linear_fast || (group_index == 0 && cfg.linear_fast_body);
 
         size_t max_nodes = 294912;
         size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
@@ -529,8 +533,7 @@ bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
         // also caps any batch at ~8 before hitting Vulkan's ~4.29GB
         // maxStorageBufferRange.
         size_t max_nodes = 393216;
-        int NB = 1;
-        if (const char * e = getenv("SEETHROUGH_DECODE_BATCH")) NB = std::max(1, atoi(e));
+        const int NB = std::max(1, cfg.decode_batch);
         ggml_backend_t backend = pipe_backend(cfg);
         struct DecGraph {
             ggml_context * ctx = nullptr;

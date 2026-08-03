@@ -5,6 +5,11 @@
 //               [--seed N] [--steps N] [--res N] [--depth-res N] [--threads N]
 //               [--no-split-depth] [--no-split-lr]
 //               [--split-depth-tags tag1,tag2,...] [--split-lr-tags tag1,tag2,...]
+//               [--no-conv-f16] [--rowchunk-budget-mb N] [--linear-fast]
+//               [--no-linear-fast-body] [--no-tiled-attn] [--flash-attn-layerdiff]
+//               [--no-vae-tile] [--decode-batch N]
+//
+// The GPU/precision flags above replace the former SEETHROUGH_* env vars.
 
 #include "pipeline.h"
 #include "psd_write.h"
@@ -75,6 +80,14 @@ int main(int argc, char ** argv) {
         else if (a == "--no-split-lr")    { cfg.partseg_flags &= ~PARTSEG_LR; }
         else if (a == "--split-depth-tags") { cfg.depth_split_tags = split_csv(next()); }
         else if (a == "--split-lr-tags")    { cfg.lr_split_tags = split_csv(next()); }
+        else if (a == "--no-conv-f16")          { cfg.conv_f16 = false; }
+        else if (a == "--rowchunk-budget-mb")   { cfg.rowchunk_budget_mb = std::stoi(next()); }
+        else if (a == "--linear-fast")          { cfg.linear_fast = true; }
+        else if (a == "--no-linear-fast-body")  { cfg.linear_fast_body = false; }
+        else if (a == "--no-tiled-attn")        { cfg.tiled_attn = false; }
+        else if (a == "--flash-attn-layerdiff") { cfg.flash_attn_layerdiff = true; }
+        else if (a == "--no-vae-tile")          { cfg.vae_tile = false; }
+        else if (a == "--decode-batch")         { cfg.decode_batch = std::stoi(next()); }
         else { fprintf(stderr, "unknown arg %s\n", a.c_str()); return 1; }
     }
     if (in_path.empty()) {
@@ -82,7 +95,10 @@ int main(int argc, char ** argv) {
                         "[--seed N] [--steps N] [--res N] [--depth-res N] [--threads N] "
                         "[--device vulkan] (GPU-only; --device cpu is not supported) "
                         "[--no-split-depth] [--no-split-lr] "
-                        "[--split-depth-tags tag1,tag2,...] [--split-lr-tags tag1,tag2,...]\n");
+                        "[--split-depth-tags tag1,tag2,...] [--split-lr-tags tag1,tag2,...] "
+                        "[--no-conv-f16] [--rowchunk-budget-mb N] [--linear-fast] "
+                        "[--no-linear-fast-body] [--no-tiled-attn] [--flash-attn-layerdiff] "
+                        "[--no-vae-tile] [--decode-batch N]\n");
         return 1;
     }
     setvbuf(stdout, nullptr, _IONBF, 0);

@@ -53,6 +53,16 @@ struct Model {
                                   // engage row-chunking; the UNet uses a
                                   // much lower floor to cover its smaller
                                   // (but batched) latent-space convs
+    bool  conv_f16 = true;        // f16 im2col for f16 weights (halves im2col
+                                  // traffic); CLI --no-conv-f16 forces f32
+    int64_t rowchunk_budget_mb = 2048;  // per-chunk im2col VRAM budget that
+                                  // sizes the row-chunk count (CLI
+                                  // --rowchunk-budget-mb)
+    bool  vae_tile = true;        // tile the VAE/unet1024 decode above one
+                                  // tile size; CLI --no-vae-tile decodes whole
+    bool  linear_fast_all = false; // force backend-default-precision linear()
+                                  // on every model, not just the body pass
+                                  // (CLI --linear-fast)
 
     // diagnostic stage taps (docs/ggml-upstream-issues.md #4): when set,
     // vae_decode/unet1024 push_back a tap after each major stage and mark

@@ -167,10 +167,9 @@ ggml_tensor * conv2d(Model & m, ggml_tensor * x, const std::string & pre, int st
         // 0009's production-shape tap analysis already characterized f16
         // conv-activation rounding in this UNet as ordinary noise that
         // shrinks 20x through the up-path; opt-in until IoU-verified here.
-        const ggml_type imt = (w->type == GGML_TYPE_F16 && !getenv("SEETHROUGH_NO_CONV_F16"))
+        const ggml_type imt = (w->type == GGML_TYPE_F16 && m.conv_f16)
                                   ? GGML_TYPE_F16 : GGML_TYPE_F32;
-        int64_t budget_mb = 2048;
-        if (const char * e = getenv("SEETHROUGH_ROWCHUNK_BUDGET_MB")) budget_mb = atoll(e);
+        const int64_t budget_mb = m.rowchunk_budget_mb;
         const int64_t im2col_bytes = W * H * N * C * 9 * (imt == GGML_TYPE_F16 ? 2 : 4);
         const int64_t NCH = std::max<int64_t>(1, (im2col_bytes + budget_mb * 1024 * 1024 - 1) / (budget_mb * 1024 * 1024));
         const int64_t TS = (H + NCH - 1) / NCH;
@@ -223,7 +222,7 @@ ggml_tensor * conv2d(Model & m, ggml_tensor * x, const std::string & pre, int st
     // ggml_conv_2d unconditionally rounds activations to f16 in im2col; for
     // f32 weights (SDXL VAE encoder has activations too large for that) keep
     // the whole conv in f32 instead
-    ggml_type it = (w->type == GGML_TYPE_F16 && !getenv("SEETHROUGH_NO_CONV_F16"))
+    ggml_type it = (w->type == GGML_TYPE_F16 && m.conv_f16)
                        ? GGML_TYPE_F16 : GGML_TYPE_F32;
     ggml_tensor * im = ggml_im2col(ctx, w, x, stride, stride, pad, pad, 1, 1, true, it);
     ggml_tensor * r = conv_mm(ctx, im, w);
@@ -269,7 +268,7 @@ ggml_tensor * linear(Model & m, ggml_tensor * x, const std::string & pre) {
     // SEETHROUGH_LINEAR_FAST=1 uses the backend-default precision here
     // (conv2d and attention keep their PREC_F32 guards regardless).
     ggml_tensor * y;
-    if (m.linear_fast || getenv("SEETHROUGH_LINEAR_FAST")) {
+    if (m.linear_fast || m.linear_fast_all) {
         y = ggml_mul_mat(ctx, w, x);
     } else {
         y = mul_mat_f32(ctx, w, x);

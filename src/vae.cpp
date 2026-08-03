@@ -164,7 +164,7 @@ ggml_tensor * vae_decode_tiled(Model & m, ggml_tensor * z) {
     const int64_t BLEND_PX    = TILE_PX / 4;          // 128
     const int64_t ROW_LIMIT_PX = TILE_PX - BLEND_PX;  // 384
 
-    if (ZH <= TILE_LATENT && ZW <= TILE_LATENT) { return vae_decode(m, z); }
+    if ((ZH <= TILE_LATENT && ZW <= TILE_LATENT) || !m.vae_tile) { return vae_decode(m, z); }
 
     std::vector<int64_t> row0, col0;
     for (int64_t i = 0; i < ZH; i += OVERLAP_LAT) { row0.push_back(i); }
@@ -293,7 +293,7 @@ static ggml_tensor * unet1024_tiled(Model & m, ggml_tensor * x, ggml_tensor * la
     const int64_t BLEND_PX    = TILE_PX / 4;          // 128
     const int64_t ROW_LIMIT_PX = TILE_PX - BLEND_PX;  // 384
 
-    if (H <= TILE_PX && W <= TILE_PX) { return unet1024(m, x, latent); }
+    if ((H <= TILE_PX && W <= TILE_PX) || !m.vae_tile) { return unet1024(m, x, latent); }
 
     std::vector<int64_t> row0, col0;
     for (int64_t i = 0; i < H; i += OVERLAP_PX) { row0.push_back(i); }
