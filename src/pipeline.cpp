@@ -1352,16 +1352,31 @@ bool run_see_through(const PipelineConfig & cfg, const Image & input, SeeThrough
         Image dl;
         dl.w = dl.h = RES; dl.c = 1;
         dl.data.assign((size_t) RES * RES, 1.0f);
-        std::vector<float> visible;
+        std::vector<float> visible, local_all;
         for (size_t i = 0; i < dl.data.size(); i++) {
             bool local = sub.data[i * 4 + 3] > 15.0f / 255.0f;
             if (local) {
                 dl.data[i] = std::min(1.0f, std::max(0.0f, depth.data[i]));
+                local_all.push_back(dl.data[i]);
                 if (!occl[i]) { visible.push_back(dl.data[i]); }
             }
         }
-        std::sort(visible.begin(), visible.end());
-        float med = visible.empty() ? 1.0f : visible[visible.size() / 2];
+        // Prefer the median over non-occluded ("visible") pixels. But a tag
+        // that sits entirely inside another (eyes within the face/head: every
+        // pixel is in occl_base) has NO visible pixels, and the old 1.0
+        // fallback stamped the whole part to depth 1.0 -- the max -- sorting
+        // it to the very back of the depth-descending stack (eyes behind the
+        // face). That 1.0 was a no-data sentinel, not a depth: upstream keeps
+        // these tags' raw marigold depth median (postproc.cpp:490-505). So
+        // when fully occluded, fall back to the tag's own raw depth median
+        // over its full alpha instead -- still model-derived, never constant.
+        // src is empty only when the tag has no local pixels at all; med is
+        // then never read (the fill loop below only touches local pixels) and
+        // crop_part drops the tag, so the 0.0 here is just to keep the median
+        // expression well-defined on an empty vector, not a depth value.
+        std::vector<float> & src = visible.empty() ? local_all : visible;
+        std::sort(src.begin(), src.end());
+        float med = src.empty() ? 0.0f : src[src.size() / 2];
         for (size_t i = 0; i < dl.data.size(); i++) {
             bool local = sub.data[i * 4 + 3] > 15.0f / 255.0f;
             if (local && occl[i]) { dl.data[i] = med; }
