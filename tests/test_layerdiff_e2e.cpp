@@ -72,7 +72,9 @@ int main(int argc, char ** argv) {
 
     // static graph reused every step: allocate once, swap inputs
     ggml_backend_t backend = st_backend_init();
+#ifdef SEETHROUGH_HAVE_CPU_BACKEND
     if (ggml_backend_is_cpu(backend)) ggml_backend_cpu_set_n_threads(backend, 8);
+#endif
     ggml_cgraph * gf = ggml_new_graph_custom(ctx, 16384, false);
     ggml_build_forward_expand(gf, out);
     printf("graph: %d nodes\n", ggml_graph_n_nodes(gf));

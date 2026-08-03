@@ -72,18 +72,33 @@ add_library(seethrough STATIC
     src/pipeline.cpp
 )
 target_link_libraries(seethrough PUBLIC ggml)
+# -DGGML_CPU=OFF is a supported configuration: the pipeline is GPU-only
+# (src/pipeline.cpp rejects --device cpu outright), so the CPU backend is
+# only needed by the code that uses it as a *reference* to check GPU math
+# against. Propagate the option as a define so those call sites -- and the
+# targets built around them below -- can compile out instead of failing to
+# link against a ggml-cpu that was never built.
+if (GGML_CPU)
+    target_compile_definitions(seethrough PUBLIC SEETHROUGH_HAVE_CPU_BACKEND)
+endif()
 target_include_directories(seethrough PUBLIC src stb)
 target_include_directories(seethrough PRIVATE third_party/ggml/src)
 
 add_executable(see-through src/see_through.cpp src/psd_write.cpp)
 target_link_libraries(see-through PRIVATE seethrough Psd)
 
-add_library(seethrough_c SHARED src/seethrough_capi.cpp src/gemm_witness.cpp)
-target_link_libraries(seethrough_c PRIVATE seethrough)
-target_compile_definitions(seethrough_c PRIVATE ST_BUILD_DLL)
-# ggml's own Q4_0 reference quantizer, for the quantization witness cases
-# (private header: block_q4_0 layout + quantize_row_q4_0_ref)
-target_include_directories(seethrough_c PRIVATE third_party/ggml/src)
+# Lean witness testing (st_witness_check*): runs the same GEMM on CPU and on
+# the GPU backend and compares them, so the CPU backend isn't a fallback here
+# but the ground truth being checked against. Nothing to verify without it --
+# skip the whole target rather than ship one that can't do its job.
+if (GGML_CPU)
+    add_library(seethrough_c SHARED src/seethrough_capi.cpp src/gemm_witness.cpp)
+    target_link_libraries(seethrough_c PRIVATE seethrough)
+    target_compile_definitions(seethrough_c PRIVATE ST_BUILD_DLL)
+    # ggml's own Q4_0 reference quantizer, for the quantization witness cases
+    # (private header: block_q4_0 layout + quantize_row_q4_0_ref)
+    target_include_directories(seethrough_c PRIVATE third_party/ggml/src)
+endif()
 
 # separate from seethrough_c above: that one is scoped to Lean witness
 # testing (st_witness_check*), this one drives the real production
@@ -93,7 +108,17 @@ add_library(see_through_c SHARED src/see_through_capi.cpp)
 target_link_libraries(see_through_c PRIVATE seethrough)
 target_compile_definitions(see_through_c PRIVATE ST2_BUILD_DLL)
 
-foreach(t test_trans_vae test_sd_vae test_trans_vae_full test_clip test_vae_encode test_vae_encode_160 test_vae_encode_tiled test_unet_blocks test_unet_forward test_unet_forward_160 test_unet_forward_head_real test_scheduler test_layerdiff_e2e test_layerdiff_e2e_160 test_ddim test_marigold_e2e test_lama graph_mem test_linear_precision test_attn_precision test_metal_nan test_vae_decode_metal)
+set(SEETHROUGH_TESTS test_trans_vae test_sd_vae test_trans_vae_full test_clip test_vae_encode test_vae_encode_160 test_vae_encode_tiled test_unet_blocks test_unet_forward test_unet_forward_160 test_unet_forward_head_real test_scheduler test_layerdiff_e2e test_layerdiff_e2e_160 test_ddim test_marigold_e2e test_lama test_metal_nan test_vae_decode_metal)
+
+# Same reasoning as seethrough_c: these three name ggml_backend_cpu_init
+# directly and can't be made backend-agnostic -- the precision tests exist to
+# diff GPU output against CPU output, and graph_mem measures allocation
+# against the CPU buffer type.
+if (GGML_CPU)
+    list(APPEND SEETHROUGH_TESTS graph_mem test_linear_precision test_attn_precision)
+endif()
+
+foreach(t ${SEETHROUGH_TESTS})
     add_executable(${t} tests/${t}.cpp)
     target_link_libraries(${t} PRIVATE seethrough)
 endforeach()

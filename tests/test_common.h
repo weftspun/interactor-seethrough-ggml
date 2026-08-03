@@ -7,7 +7,12 @@
 
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
+// SEETHROUGH_HAVE_CPU_BACKEND tracks ggml's GGML_CPU option (see CMakeLists.txt).
+// A -DGGML_CPU=OFF build has no ggml-cpu library to link against, so every
+// ggml_backend_cpu_* call has to compile out, not just go unused.
+#ifdef SEETHROUGH_HAVE_CPU_BACKEND
 #include "ggml-cpu.h"
+#endif
 
 #include <cmath>
 #include <cstdint>
@@ -28,7 +33,13 @@ static ggml_backend_t st_backend_init() {
             return ggml_backend_dev_init(d, nullptr);
         }
     }
+#ifdef SEETHROUGH_HAVE_CPU_BACKEND
     return ggml_backend_cpu_init();
+#else
+    fprintf(stderr, "error: no GPU device found and this build has no CPU "
+                    "backend (-DGGML_CPU=OFF).\n");
+    exit(1);
+#endif
 }
 
 // load weights to the right place for the selected device;
@@ -97,7 +108,11 @@ template <typename SetInputs>
 static bool compute_cpu_multi(Model & m, const std::vector<ggml_tensor *> & outs,
                               size_t max_nodes, SetInputs set_inputs, int n_threads = 8) {
     ggml_backend_t backend = st_backend_init();
+#ifdef SEETHROUGH_HAVE_CPU_BACKEND
     if (ggml_backend_is_cpu(backend)) ggml_backend_cpu_set_n_threads(backend, n_threads);
+#else
+    (void) n_threads;
+#endif
     ggml_cgraph * gf = ggml_new_graph_custom(m.ctx_g, max_nodes, false);
     for (ggml_tensor * out : outs) ggml_build_forward_expand(gf, out);
     printf("graph: %d nodes\n", ggml_graph_n_nodes(gf));
