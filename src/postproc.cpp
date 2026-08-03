@@ -162,18 +162,35 @@ void crop_part(Part & p) {
     std::vector<int> labels;
     std::vector<CCStats> stats;
     int n = connected_components(mask, p.img.w, p.img.h, labels, stats);
-    int best = 0;
-    for (int l = 1; l < n; l++) {
-        if (stats[l].area > (best ? stats[best].area : 0)) { best = l; }
-    }
+    int64_t max_area = 0;
+    for (int l = 1; l < n; l++) { max_area = std::max<int64_t>(max_area, stats[l].area); }
+    // Crop to the union bbox of EVERY significant component, not just the
+    // largest. Parts like eyes/ears/handwear legitimately decode as two
+    // separated components (left+right), and upstream load_part crops to the
+    // bbox of all non-zero alpha (cv2.boundingRect(cv2.findNonZero(mask))).
+    // Keeping only the largest CC here silently dropped the second component
+    // -- and did so before tag_lr_split runs, so the split then saw a single
+    // component and never fired, leaving the part missing one side. The
+    // ~10px low-alpha corner artifact this originally guarded against is
+    // orders of magnitude smaller than any real component, so an area floor
+    // (a fraction of the largest) excludes it while keeping both real sides.
+    const int64_t min_area = std::max<int64_t>(max_area / 10, 24);
+    std::vector<uint8_t> keep((size_t) n, 0);
+    for (int l = 1; l < n; l++) { keep[l] = stats[l].area >= min_area ? 1 : 0; }
     std::vector<float> dvals;
     int x0 = 0, y0 = 0, x1 = -1, y1 = -1;
-    if (best) {
-        CCStats & s = stats[best];
-        x0 = s.x; y0 = s.y; x1 = s.x + s.w - 1; y1 = s.y + s.h - 1;
-        for (int y = s.y; y < s.y + s.h; y++) {
-            for (int x = s.x; x < s.x + s.w; x++) {
-                if (labels[(size_t) y * p.img.w + x] == best) { dvals.push_back(p.depth.px(x, y)[0]); }
+    if (max_area > 0) {
+        x0 = p.img.w; y0 = p.img.h; x1 = -1; y1 = -1;
+        for (int l = 1; l < n; l++) {
+            if (!keep[l]) { continue; }
+            CCStats & s = stats[l];
+            x0 = std::min(x0, s.x);           y0 = std::min(y0, s.y);
+            x1 = std::max(x1, s.x + s.w - 1); y1 = std::max(y1, s.y + s.h - 1);
+        }
+        for (int y = y0; y <= y1; y++) {
+            for (int x = x0; x <= x1; x++) {
+                int lb = labels[(size_t) y * p.img.w + x];
+                if (lb >= 1 && keep[lb]) { dvals.push_back(p.depth.px(x, y)[0]); }
             }
         }
     }
