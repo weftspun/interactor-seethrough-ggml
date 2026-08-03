@@ -205,7 +205,6 @@ static bool pipe_load(const PipelineConfig & cfg, Model & m, const std::string &
         m.tiled_naive_attn = !is_metal && cfg.tiled_attn;
         m.conv_f16 = cfg.conv_f16;
         m.rowchunk_budget_mb = cfg.rowchunk_budget_mb;
-        m.vae_tile = cfg.vae_tile;
         m.linear_fast_all = cfg.linear_fast;
         // A later re-run of the Lean kernel-witness gate (verify/KernelGate,
         // 2026-07-20) found flash_attn_ext failing at layerdiff-unet's
@@ -805,7 +804,7 @@ bool marigold_depth(const PipelineConfig & cfg, const std::vector<Image> & layer
         mv.ctx_g = ggml_init(dec_ip);
         ggml_tensor * zt = ggml_new_tensor_4d(mv.ctx_g, GGML_TYPE_F32, ZR, ZR, 4, 1);
         ggml_set_input(zt);
-        ggml_tensor * dec_out = vae_decode_tiled(mv, zt);
+        ggml_tensor * dec_out = vae_decode(mv, zt);
         ggml_set_output(dec_out);
         ggml_backend_t backend = pipe_backend(cfg);
         ggml_cgraph * gf = ggml_new_graph_custom(mv.ctx_g, dec_nodes, false);

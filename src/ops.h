@@ -58,8 +58,6 @@ struct Model {
     int64_t rowchunk_budget_mb = 2048;  // per-chunk im2col VRAM budget that
                                   // sizes the row-chunk count (CLI
                                   // --rowchunk-budget-mb)
-    bool  vae_tile = true;        // tile the VAE/unet1024 decode above one
-                                  // tile size; CLI --no-vae-tile decodes whole
     bool  linear_fast_all = false; // force backend-default-precision linear()
                                   // on every model, not just the body pass
                                   // (CLI --linear-fast)

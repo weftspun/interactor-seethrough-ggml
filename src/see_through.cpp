@@ -7,7 +7,7 @@
 //               [--split-depth-tags tag1,tag2,...] [--split-lr-tags tag1,tag2,...]
 //               [--no-conv-f16] [--rowchunk-budget-mb N] [--linear-fast]
 //               [--no-linear-fast-body] [--no-tiled-attn] [--flash-attn-layerdiff]
-//               [--no-vae-tile] [--decode-batch N]
+//               [--decode-batch N]
 //
 // The GPU/precision flags above replace the former SEETHROUGH_* env vars.
 
@@ -86,7 +86,6 @@ int main(int argc, char ** argv) {
         else if (a == "--no-linear-fast-body")  { cfg.linear_fast_body = false; }
         else if (a == "--no-tiled-attn")        { cfg.tiled_attn = false; }
         else if (a == "--flash-attn-layerdiff") { cfg.flash_attn_layerdiff = true; }
-        else if (a == "--no-vae-tile")          { cfg.vae_tile = false; }
         else if (a == "--decode-batch")         { cfg.decode_batch = std::stoi(next()); }
         else { fprintf(stderr, "unknown arg %s\n", a.c_str()); return 1; }
     }
@@ -98,7 +97,7 @@ int main(int argc, char ** argv) {
                         "[--split-depth-tags tag1,tag2,...] [--split-lr-tags tag1,tag2,...] "
                         "[--no-conv-f16] [--rowchunk-budget-mb N] [--linear-fast] "
                         "[--no-linear-fast-body] [--no-tiled-attn] [--flash-attn-layerdiff] "
-                        "[--no-vae-tile] [--decode-batch N]\n");
+                        "[--decode-batch N]\n");
         return 1;
     }
     setvbuf(stdout, nullptr, _IONBF, 0);

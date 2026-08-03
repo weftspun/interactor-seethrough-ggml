@@ -29,15 +29,6 @@ ggml_tensor * vae_encode_tiled(Model & m, ggml_tensor * x);
 // Weight names: "post_quant_conv", "decoder.*". Unscaled latent expected.
 ggml_tensor * vae_decode(Model & m, ggml_tensor * z);
 
-// AutoencoderKL tiled decode, matching diffusers' AutoencoderKL.tiled_decode:
-// splits the latent into overlapping 64x64 (tile_latent_min_size) tiles,
-// decodes each with the plain vae_decode above (each producing a 512x512
-// pixel tile), blends the pixel-space overlap, crops, and concatenates. See
-// vae_encode_tiled's comment -- the same out-of-trained-scale reasoning
-// applies to decode. No-op passthrough when the latent already fits in one
-// tile.
-ggml_tensor * vae_decode_tiled(Model & m, ggml_tensor * z);
-
 // UNet1024 (TransparentVAE decoder head): x (r,r,3,1) pixels in [0,1] +
 // latent (r/8,r/8,4,1) -> RGBA logits (r,r,4,1). Weights under "decoder.model.".
 ggml_tensor * unet1024(Model & m, ggml_tensor * x, ggml_tensor * latent);

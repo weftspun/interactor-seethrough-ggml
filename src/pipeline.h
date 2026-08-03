@@ -52,7 +52,6 @@ struct PipelineConfig {
     bool linear_fast_body = true;       // --no-linear-fast-body
     bool tiled_attn = true;             // --no-tiled-attn (Vulkan VRAM path)
     bool flash_attn_layerdiff = false;  // --flash-attn-layerdiff
-    bool vae_tile = true;               // --no-vae-tile: decode whole, no tiles
     int  decode_batch = 1;              // --decode-batch N (frames per graph)
 };
 
