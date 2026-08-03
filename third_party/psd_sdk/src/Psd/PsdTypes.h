@@ -6,6 +6,7 @@
 
 #include "Psdstdint.h"
 
+#include <assert.h>
 
 /// \ingroup Platform
 /// \brief Defines a standard 32-bit floating-point type.

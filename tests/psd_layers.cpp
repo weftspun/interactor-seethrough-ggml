@@ -20,8 +20,10 @@
 #include "image_utils.h"
 
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <string>
+#include <limits.h>
 
 PSD_USING_NAMESPACE;
 
