@@ -213,10 +213,19 @@ static bool pipe_load(const PipelineConfig & cfg, Model & m, const std::string &
         // (disable_broken_coopmat2() above, done automatically for every
         // entry point) drops every one of those violations to <0.07. With
         // that fixed at the source, the original "Lean-witness-validated
-        // exact for layerdiff-unet's shapes" claim holds again, so
-        // layerdiff-unet keeps its flash_attn override below.
+        // exact for layerdiff-unet's shapes" claim held for flash_attn, so
+        // flash had been the layerdiff default. But flash_attn's compute
+        // buffer scales with the full per-frame attention batched over frames
+        // (~18.4GB at res=1280) and OOMs a 24GB GPU well before the upstream
+        // resolution=1280. Make the VRAM-bounded query-tiled naive path the
+        // layerdiff default instead: it holds each kq chunk to a fixed budget
+        // regardless of token count, so the pass survives higher resolutions
+        // without OOM. Tiled is Lean-witness-exact vs CPU ground truth at
+        // these shapes (docs #4), just slower than flash, so this trades some
+        // speed for headroom. SEETHROUGH_FLASH_ATTN_LAYERDIFF opts back into
+        // flash_attn (e.g. at res<=768 where its buffer still fits) for A/B.
         if (unet && path.find("layerdiff-unet") != std::string::npos &&
-            !getenv("SEETHROUGH_TILED_ATTN_LAYERDIFF")) {
+            getenv("SEETHROUGH_FLASH_ATTN_LAYERDIFF")) {
             m.tiled_naive_attn = false;
         }
         return m.load_backend(path.c_str(), ggml_backend_dev_buffer_type(d));
