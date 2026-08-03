@@ -1,6 +1,8 @@
 *.gguf
 *.safetensors
-models/
+# no trailing slash: this is a symlink to /opt/see-through/models on some
+# machines, and "models/" would only match a real directory
+models
 models-q4/
 ggufs/
 __pycache__/

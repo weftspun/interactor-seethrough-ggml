@@ -1,7 +1,23 @@
 # Speedup candidates after the quantize_y precision fixes
 
-* Status: proposed
+* Status: superseded by [0011](0011-unet-loop-speedups.md)
 * Date: 2026-07-20
+
+> **Superseded.** Every actionable candidate below has since been resolved,
+> and the measurements are stale — the `layerdiff.body` numbers here peak at
+> 749.2s, against ~160s on current `main`. Kept as the record of how the
+> candidates were ranked, not as a to-do list.
+>
+> - Candidate 1 (scope the precision fix down) — done in `4e4156e`, which
+>   reverted the `out_prod`/residual `quantize_y` fix.
+> - Candidate 3 (wire Winograd into the chunked conv paths) — rejected. MADR
+>   0011 measured the Winograd composition as *slower* than what it replaced
+>   and made it opt-in; `21843c2` then removed the path entirely, so
+>   `conv2d_winograd_3x3s1` no longer exists in `src/ops.cpp`.
+> - Candidate 5 (re-enable flash attn per-model) — done in MADR 0011 finding
+>   1, scoped to layerdiff-unet; later made the default in `1ccc3a8`.
+>
+> Candidates 2 and 4 were never separately actioned and remain unconfirmed.
 
 ## Context and Problem Statement
 

@@ -264,6 +264,11 @@ in full, per the split convention established by MADR 0004.
   - Added `src/see_through_capi.h`/`.cpp` (`st_render`/`st_free_result`) —
     a proper C ABI over `run_see_through()`, separate from
     `seethrough_capi.h` (which stays scoped to Lean witness testing).
+  - **Since removed** (`be2aef5` "We don't use picoquic", `eb4c81a` "We
+    don't build the h3 server anymore"): the HTTP/3 server described in the
+    next bullet, its vendored QUIC stack, and `src/server_h3.cpp` are all
+    gone from the tree. Recorded here as history of what was built and
+    verified at the time, not as a description of the current build.
   - Vendored `picoquic`+`picotls`+`mbedtls` (copied from
     `github.com/fire/webtransportd`, commit
     `b53faa2d1b94b2d3e3ee7f1591c82d0a7ea2952e` — the same combination

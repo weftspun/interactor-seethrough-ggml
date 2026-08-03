@@ -73,6 +73,13 @@ survived the dispatch overhead and the out_prod kernel's performance.
 
 **Change**: the Winograd path is opt-in via `SEETHROUGH_WINOGRAD=1`.
 Convs below `conv_row_chunk_min_hw` now take plain im2col+mul_mat.
+
+> **Later update.** The opt-in path described here no longer exists:
+> `21843c2` ("Remove unused Winograd F(2x2,3x3) conv path") deleted
+> `conv2d_winograd_3x3s1` outright, so `SEETHROUGH_WINOGRAD=1` does nothing
+> and there is no Winograd code in `src/ops.cpp`. The conclusion stands —
+> revisit only as a fused kernel.
+
 Decode stages roughly halved (layerdiff.body 281.8s → 175.8s includes
 this plus finding 2). Revisit Winograd only as a fused kernel, never as
 an op composition.
