@@ -78,14 +78,6 @@ jobs:
         shell: bash
         run: cmake --build build --config Release -v --target see-through --target seethrough_c --target see_through_c -j
 
-      # The vendored HTTP/3 server has WIN32-specific code paths that were
-      # only ever exercised on Windows so far; best-effort elsewhere -- a
-      # failure here is useful signal but shouldn't block the core build.
-      - name: Build HTTP/3 server (best-effort)
-        shell: bash
-        continue-on-error: true
-        run: cmake --build build --config Release --target see-through-server-h3 -j
-
       - name: Package binaries
         shell: bash
         run: |
