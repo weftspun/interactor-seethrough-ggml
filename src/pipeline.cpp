@@ -231,6 +231,12 @@ static bool pipe_load(const PipelineConfig & cfg, Model & m, const std::string &
             cfg.flash_attn_layerdiff) {
             m.tiled_naive_attn = false;
         }
+        // Token-tile the layerdiff UNet's GEGLU feed-forward to keep its f32
+        // proj transient VRAM-bounded. Exact (per-token elementwise -> no
+        // seams), so always on regardless of resolution.
+        if (unet && path.find("layerdiff-unet") != std::string::npos) {
+            m.geglu_tile = true;
+        }
         return m.load_backend(path.c_str(), ggml_backend_dev_buffer_type(d));
     }
     return m.load(path.c_str());

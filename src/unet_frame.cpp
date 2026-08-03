@@ -79,9 +79,34 @@ ggml_tensor * geglu_ff(Model & m, ggml_tensor * x, const std::string & pre) {
     ggml_context * ctx = m.ctx_g;
     // diffusers GEGLU is hidden * gelu(gate) with the gate in the SECOND half
     // of the projection — ggml's unswapped variant activates the first half
-    x = linear(m, x, pre + ".net.0.proj");
-    x = ggml_geglu_erf_swapped(ctx, x);
-    return linear(m, x, pre + ".net.2");
+    auto ff = [&](ggml_tensor * t) {
+        t = linear(m, t, pre + ".net.0.proj");
+        t = ggml_geglu_erf_swapped(ctx, t);
+        return linear(m, t, pre + ".net.2");
+    };
+    const int64_t C = x->ne[0], T = x->ne[1], B = x->ne[2];
+    // Token-tile the feed-forward so the (2*inner, chunk, B) f32 projection
+    // transient stays bounded: at res=1280 the untiled proj is ~3.4GB (the
+    // single largest tensor in the UNet compute buffer, since gallocr can't
+    // fold it away). GEGLU is a per-token elementwise map, so chunking the
+    // token axis is exact. Off (m.geglu_tile=false) or when it already fits in
+    // one chunk -> the plain single call, unchanged.
+    ggml_tensor * pw = m.get(pre + ".net.0.proj.weight");
+    const int64_t inner2 = pw->ne[1];
+    const int64_t target_bytes = 512LL * 1024 * 1024;
+    const int64_t per_tok = std::max<int64_t>(inner2 * B * 4, 1);
+    int64_t chunk = std::max<int64_t>(1, target_bytes / per_tok);
+    if (!m.geglu_tile || chunk >= T) { return ff(x); }
+    x = ggml_cont(ctx, x);
+    ggml_tensor * acc = nullptr;
+    for (int64_t t0 = 0; t0 < T; t0 += chunk) {
+        const int64_t t1 = std::min(t0 + chunk, T);
+        ggml_tensor * xc = ggml_cont(ctx, ggml_view_3d(ctx, x, C, t1 - t0, B,
+                                                       x->nb[1], x->nb[2], t0 * x->nb[1]));
+        ggml_tensor * oc = ff(xc);
+        acc = acc ? ggml_concat(ctx, acc, oc, 1) : oc;
+    }
+    return acc;
 }
 
 ggml_tensor * basic_transformer_block(Model & m, ggml_tensor * x, ggml_tensor * ehs,

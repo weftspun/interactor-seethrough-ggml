@@ -61,6 +61,10 @@ struct Model {
     bool  linear_fast_all = false; // force backend-default-precision linear()
                                   // on every model, not just the body pass
                                   // (CLI --linear-fast)
+    bool  geglu_tile = false;     // tile the transformer GEGLU feed-forward
+                                  // over tokens so its ~2560-dim f32 proj
+                                  // transient (3.4GB at res=1280) stays
+                                  // VRAM-bounded; exact (geglu is per-token)
 
     // diagnostic stage taps (docs/ggml-upstream-issues.md #4): when set,
     // vae_decode/unet1024 push_back a tap after each major stage and mark
