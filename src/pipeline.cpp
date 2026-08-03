@@ -1434,6 +1434,41 @@ bool run_see_through(const PipelineConfig & cfg, const Image & input, SeeThrough
     further_extr_parts(parts, fullpage, inpaint, cfg.partseg_flags,
                        cfg.depth_split_tags, cfg.lr_split_tags);
 
+    // Compose-order z-constraint. compose_list is back->front (e.g. eyes =
+    // eyewhite,irides,eyelash,eyebrow), the model's own paint order for parts
+    // that share a region. The flat depth-median sort below otherwise lets a
+    // few-thousandths marigold-depth wobble flip a nested pair -- most visibly
+    // eyewhite/irides, where the iris is anatomically ALWAYS in front of the
+    // sclera. Enforce it systematically from geometry, not per-tag rules: when
+    // a later (front) group member is spatially CONTAINED in an earlier (back)
+    // member, pull it in front. Containment (not mere overlap) is the key --
+    // irides sits inside eyewhite so it's constrained, while eyebrow only abuts
+    // the eye so it keeps its own (correctly backmost) depth. LR-split parts
+    // carry the -l/-r suffix; the bare name covers the --no-split-lr case.
+    auto contained = [](const int (&in)[4], const int (&out)[4]) {
+        long ix = (long) std::max(0, std::min(in[2], out[2]) - std::max(in[0], out[0]));
+        long iy = (long) std::max(0, std::min(in[3], out[3]) - std::max(in[1], out[1]));
+        long ia = (long) std::max(1, in[2] - in[0]) * std::max(1, in[3] - in[1]);
+        return ix * iy >= 0.7 * (double) ia;
+    };
+    for (const auto & grp : COMPOSE) {
+        const std::vector<std::string> & seq = grp.second;  // back -> front
+        for (const char * suf : { "", "-l", "-r" }) {
+            for (size_t a = 0; a + 1 < seq.size(); a++) {
+                auto pa = parts.find(seq[a] + suf);
+                if (pa == parts.end()) { continue; }
+                for (size_t b = a + 1; b < seq.size(); b++) {
+                    auto pb = parts.find(seq[b] + suf);
+                    if (pb == parts.end()) { continue; }
+                    if (contained(pb->second.xyxy, pa->second.xyxy) &&
+                        pb->second.depth_median >= pa->second.depth_median) {
+                        pb->second.depth_median = pa->second.depth_median - 1e-4;
+                    }
+                }
+            }
+        }
+    }
+
     std::vector<const Part *> ordered;
     for (const auto & kv : parts) { ordered.push_back(&kv.second); }
     // stable_sort: any remaining depth_median ties (should be rare after
