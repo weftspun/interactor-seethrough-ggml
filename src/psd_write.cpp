@@ -58,6 +58,16 @@ bool write_psd(const std::string & path, int canvas_w, int canvas_h,
     ExportDocument * document = CreateExportDocument(&allocator, (unsigned) canvas_w, (unsigned) canvas_h,
                                                       8u, exportColorMode::RGB);
 
+    // Flattened composite for the merged-image section. Without this, psd_sdk
+    // zero-fills that section (PsdExport.cpp: UpdateMergedImage never called ->
+    // black), so lightweight viewers that show the composite instead of
+    // recompositing layers (Explorer thumbnails, IDE image previews) render
+    // black. Composite straight alpha-over onto white, in layer-array order --
+    // which is PSD bottom-to-top, so later layers paint over earlier ones,
+    // matching how Photoshop would recomposite the stack.
+    const size_t N = (size_t) canvas_w * canvas_h;
+    std::vector<float> comp(N * 3, 1.0f);
+
     for (size_t i = 0; i < layers.size(); i++) {
         const std::string & name = layers[i].first;
         const std::vector<uint8_t> & png = layers[i].second;
@@ -73,7 +83,30 @@ bool write_psd(const std::string & path, int canvas_w, int canvas_h,
         UpdateLayer(document, &allocator, layer, exportChannel::GREEN, x0, y0, x1, y1, planar8(img, 0, 0, img.w, img.h, 1).data(), compressionType::RLE);
         UpdateLayer(document, &allocator, layer, exportChannel::BLUE,  x0, y0, x1, y1, planar8(img, 0, 0, img.w, img.h, 2).data(), compressionType::RLE);
         UpdateLayer(document, &allocator, layer, exportChannel::ALPHA, x0, y0, x1, y1, planar8(img, 0, 0, img.w, img.h, 3).data(), compressionType::RLE);
+
+        // alpha-over into the composite, clamped to the canvas
+        for (int ly = 0; ly < img.h; ly++) {
+            int cy = y0 + ly;
+            if (cy < 0 || cy >= canvas_h) { continue; }
+            for (int lx = 0; lx < img.w; lx++) {
+                int cx = x0 + lx;
+                if (cx < 0 || cx >= canvas_w) { continue; }
+                const float * s = &img.data[((size_t) ly * img.w + lx) * img.c];
+                float a = std::min(1.0f, std::max(0.0f, s[3]));
+                float * d = &comp[((size_t) cy * canvas_w + cx) * 3];
+                for (int c = 0; c < 3; c++) { d[c] = s[c] * a + d[c] * (1.0f - a); }
+            }
+        }
     }
+
+    std::vector<uint8_t> mR(N), mG(N), mB(N);
+    for (size_t i = 0; i < N; i++) {
+        auto to8 = [](float v) { return (uint8_t) std::lround(std::min(1.0f, std::max(0.0f, v)) * 255.0f); };
+        mR[i] = to8(comp[i * 3 + 0]);
+        mG[i] = to8(comp[i * 3 + 1]);
+        mB[i] = to8(comp[i * 3 + 2]);
+    }
+    UpdateMergedImage(document, &allocator, mR.data(), mG.data(), mB.data());
 
     WriteDocument(document, &allocator, &file);
     DestroyExportDocument(document, &allocator);
