@@ -168,26 +168,6 @@ if (SEETHROUGH_BUILD_H3_SERVER)
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls/library/godot_core_mbedtls_platform.c")
 
     file(GLOB LOGLIB_SRCS "third_party/picoquic/loglib/*.c")
-
-    add_library(picoquic_vendored STATIC
-        ${PICOQUIC_CORE_SRCS} ${PICOHTTP_SRCS}
-        ${PICOTLS_SRCS} ${PICOTLS_CIFRA_SRCS} ${CIFRA_SRCS} ${MICROECC_SRCS}
-        ${PICOQUIC_MBEDTLS_SRCS} ${MBEDTLS_SRCS} ${LOGLIB_SRCS})
-    target_compile_options(picoquic_vendored PRIVATE -w)
-    if (WIN32 AND NOT (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC"))
-        target_compile_options(picoquic_vendored PRIVATE
-            -Wno-error=incompatible-pointer-types
-            -Wno-error=implicit-function-declaration
-            -Wno-error=int-conversion)
-    endif()
-    target_compile_definitions(picoquic_vendored PRIVATE ${PICOQUIC_DEFS})
-    target_include_directories(picoquic_vendored SYSTEM PUBLIC ${VENDOR_QUIC_INCLUDES})
-    find_package(Threads REQUIRED)
-    target_link_libraries(picoquic_vendored PUBLIC Threads::Threads)
-    if (WIN32)
-        target_link_libraries(picoquic_vendored PUBLIC ws2_32 iphlpapi bcrypt)
-    endif()
-
     add_executable(see-through-server-h3 src/server_h3.cpp)
     target_compile_definitions(see-through-server-h3 PRIVATE ${PICOQUIC_DEFS})
     target_include_directories(see-through-server-h3 PRIVATE src)
