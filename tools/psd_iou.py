@@ -12,6 +12,7 @@ the upstream PNGs' <NNN>_<tag>.png filenames, both already normalized to
 the same alnum/-/_ charset). For each match, thresholds both alpha channels
 and reports intersection-over-union on the full canvas.
 """
+
 import argparse
 import glob
 import json
@@ -82,7 +83,9 @@ def main():
     for tag in matched:
         a, b = ours[tag], theirs[tag]
         if a.shape != b.shape:
-            print(f"{tag:<16} {'shape mismatch ' + str(a.shape) + ' vs ' + str(b.shape)}")
+            print(
+                f"{tag:<16} {'shape mismatch ' + str(a.shape) + ' vs ' + str(b.shape)}"
+            )
             continue
         score = iou(a, b, args.thr)
         scores.append(score)

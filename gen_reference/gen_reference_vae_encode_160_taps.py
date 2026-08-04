@@ -10,8 +10,8 @@ with direct_conv/conv_row_chunk disabled for the VAE (matching production)
 and the attn_block tiling fix enabled (which turned out to be a no-op here:
 the encoder's mid_block attention runs single-head, head_dim=0, well under
 the Vulkan buffer-overflow threshold already fixed elsewhere)."""
+
 import os
-import sys
 
 import numpy as np
 import torch
@@ -22,7 +22,7 @@ RES = 1280
 
 
 def main():
-    os.makedirs('gen_reference', exist_ok=True)
+    os.makedirs("gen_reference", exist_ok=True)
     vae = AutoencoderKL.from_pretrained(REPO, subfolder="vae")
     vae.eval().float()
 
@@ -34,6 +34,7 @@ def main():
     def tap(mod):
         def hook(_m, _i, out):
             taps.append((out[0] if isinstance(out, tuple) else out).detach().clone())
+
         mod.register_forward_hook(hook)
 
     enc = vae.encoder

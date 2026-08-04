@@ -17,6 +17,7 @@ tie-breaks downstream).
 Usage:
     python tools/psd_layer_order_qa.py <out.psd.json>
 """
+
 import argparse
 import json
 import sys
@@ -25,18 +26,29 @@ import sys
 # back_tag's (front = smaller depth_median, given pipeline.cpp's descending
 # sort puts larger depth_median at the bottom of the back-to-front stack)
 FRONT_OF_FACE = [
-    "eyewhite", "eyewhite-l", "eyewhite-r",
-    "irides", "irides-l", "irides-r",
-    "eyelash", "eyelash-l", "eyelash-r",
-    "eyebrow", "eyebrow-l", "eyebrow-r",
-    "nose", "mouth",
+    "eyewhite",
+    "eyewhite-l",
+    "eyewhite-r",
+    "irides",
+    "irides-l",
+    "irides-r",
+    "eyelash",
+    "eyelash-l",
+    "eyelash-r",
+    "eyebrow",
+    "eyebrow-l",
+    "eyebrow-r",
+    "nose",
+    "mouth",
 ]
 BEHIND_FACE = ["ears", "earl", "earr"]
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("psd_json", help="the <out.psd>.json sidecar written alongside a PSD export")
+    ap.add_argument(
+        "psd_json", help="the <out.psd>.json sidecar written alongside a PSD export"
+    )
     args = ap.parse_args()
 
     with open(args.psd_json, encoding="utf-8") as f:
@@ -67,8 +79,10 @@ def main():
     for tag, p in parts.items():
         dm = p["depth_median"]
         if dm in seen:
-            failures.append(f"{tag}: depth_median={dm:.6f} ties with {seen[dm]} "
-                            f"-- tie-break order becomes unspecified downstream")
+            failures.append(
+                f"{tag}: depth_median={dm:.6f} ties with {seen[dm]} "
+                f"-- tie-break order becomes unspecified downstream"
+            )
         else:
             seen[dm] = tag
 

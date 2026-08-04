@@ -2,13 +2,14 @@
 """Generate an AutoencoderKL *encoder* reference: fixed seeded image ->
 latent_dist.mean (deterministic; the port never uses .sample()). Covers both
 layerdiff-vae (SDXL) and marigold-vae (SD)."""
-import sys
 
+import sys
 import os
-os.makedirs('gen_reference', exist_ok=True)
 import numpy as np
 import torch
 from diffusers import AutoencoderKL
+
+os.makedirs("gen_reference", exist_ok=True)
 
 REPOS = {
     "layerdiff-vae": "layerdifforg/seethroughv0.0.2_layerdiff3d",

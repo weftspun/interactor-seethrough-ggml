@@ -3,14 +3,14 @@
 the ggml implementation: fixed seeded latent -> decoded image, saved as
 reference_sd_vae.bin. Component picks the HF repo (layerdiff-vae = SDXL VAE,
 marigold-vae = SD VAE); both share the AutoencoderKL architecture."""
-import sys
 
+import sys
 import os
-os.makedirs('gen_reference', exist_ok=True)
 import numpy as np
 import torch
 from diffusers import AutoencoderKL
 
+os.makedirs("gen_reference", exist_ok=True)
 REPOS = {
     "layerdiff-vae": "layerdifforg/seethroughv0.0.2_layerdiff3d",
     "marigold-vae": "24yearsold/seethroughv0.0.1_marigold",
@@ -30,7 +30,11 @@ def main():
     print("output:", tuple(y.shape), "mean", float(y.mean()), "std", float(y.std()))
 
     # simple binary: for each of z, y: i32 ndim, i64 dims..., f32 data
-    out = f"gen_reference/reference_sd_vae.bin" if comp == "layerdiff-vae" else f"gen_reference/reference_{comp}.bin"
+    out = (
+        "gen_reference/reference_sd_vae.bin"
+        if comp == "layerdiff-vae"
+        else f"gen_reference/reference_{comp}.bin"
+    )
     with open(out, "wb") as f:
         for arr in (z, y):
             a = arr.numpy().astype("<f4")

@@ -12,6 +12,7 @@ regime in the first place (confirmed present in upstream's own untiled
 reference too, not just our ggml port) -- tiling keeps every tile within
 the model's actual trained scale. Same seed/input as
 gen_reference_vae_encode_160_taps.py for a direct before/after comparison."""
+
 import os
 
 import numpy as np
@@ -23,7 +24,7 @@ RES = 1280
 
 
 def main():
-    os.makedirs('gen_reference', exist_ok=True)
+    os.makedirs("gen_reference", exist_ok=True)
     vae = AutoencoderKL.from_pretrained(REPO, subfolder="vae")
     vae.eval().float()
     vae.enable_tiling()

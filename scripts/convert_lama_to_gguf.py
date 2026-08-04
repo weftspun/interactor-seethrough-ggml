@@ -3,7 +3,7 @@
 FFCResNetGenerator 4->3, 18 FFC blocks, use_mpe=False) to lama.gguf.
 Generator state-dict names kept verbatim; everything f32 (the model is
 ~200MB and BatchNorm folding happens at graph build)."""
-import json
+
 import os
 import struct
 
@@ -39,8 +39,12 @@ def main():
     print(f"tensors: {len(tensors)}")
 
     metadata = [
-        gguf_str("general.architecture") + struct.pack("<I", VT_STR) + gguf_str("seethrough-lama"),
-        gguf_str("general.alignment") + struct.pack("<I", VT_U32) + struct.pack("<I", ALIGN),
+        gguf_str("general.architecture")
+        + struct.pack("<I", VT_STR)
+        + gguf_str("seethrough-lama"),
+        gguf_str("general.alignment")
+        + struct.pack("<I", VT_U32)
+        + struct.pack("<I", ALIGN),
     ]
 
     header = bytearray(GGUF_MAGIC)
@@ -61,7 +65,7 @@ def main():
         infos += struct.pack("<I", len(dims))
         for d in dims:
             infos += struct.pack("<Q", int(d))
-        infos += struct.pack("<I", 0)   # f32
+        infos += struct.pack("<I", 0)  # f32
         infos += struct.pack("<Q", off)
 
     pre = len(header) + len(infos)

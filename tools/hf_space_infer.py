@@ -7,7 +7,11 @@ require a local PyTorch install.
 
 Usage: python tools/hf_space_infer.py <image> [out.psd]
 Requires HF_TOKEN in the environment and gradio_client installed."""
-import os, shutil, sys, time
+
+import os
+import shutil
+import sys
+import time
 
 from gradio_client import Client, handle_file
 
@@ -19,7 +23,7 @@ out_psd = sys.argv[2] if len(sys.argv) > 2 else "upstream_reference.psd"
 
 t0 = time.time()
 client = Client("24yearsold/see-through-demo", token=os.environ["HF_TOKEN"])
-print(f"[hf] connected in {time.time()-t0:.1f}s", flush=True)
+print(f"[hf] connected in {time.time() - t0:.1f}s", flush=True)
 
 t1 = time.time()
 result = client.predict(

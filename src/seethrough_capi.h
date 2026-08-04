@@ -14,13 +14,13 @@
 #include <stdint.h>
 
 #if defined(_WIN32)
-#  if defined(ST_BUILD_DLL)
-#    define ST_API __declspec(dllexport)
-#  else
-#    define ST_API __declspec(dllimport)
-#  endif
+#if defined(ST_BUILD_DLL)
+#define ST_API __declspec(dllexport)
 #else
-#  define ST_API __attribute__((visibility("default")))
+#define ST_API __declspec(dllimport)
+#endif
+#else
+#define ST_API __attribute__((visibility("default")))
 #endif
 
 #ifdef __cplusplus
@@ -28,25 +28,25 @@ extern "C" {
 #endif
 
 typedef struct st_case {
-    const char * op;      // "conv2d" | "attn" | "linear_quant"
-    int32_t w, h, c, oc;  // conv2d: spatial + channels; linear_quant: c=in, oc=out
-    int32_t stride;       // conv2d: 1 or 2 (pad fixed at 1, k3)
-    int32_t heads, tq, tk, batch;   // attn: head count (dim 64), tokens;
-                                    // linear_quant: tq = token count (batch of rows)
-    int32_t direct;       // conv2d knob: ggml_conv_2d_direct
-    int32_t rowchunk;     // conv2d knob: row-chunked im2col
-    int32_t flash;        // attn knob: ggml_flash_attn_ext
-    int32_t tiled;        // attn knob: query-tiled naive attention
-    uint64_t seed;        // deterministic weight/input generation
+	const char *op; // "conv2d" | "attn" | "linear_quant"
+	int32_t w, h, c, oc; // conv2d: spatial + channels; linear_quant: c=in, oc=out
+	int32_t stride; // conv2d: 1 or 2 (pad fixed at 1, k3)
+	int32_t heads, tq, tk, batch; // attn: head count (dim 64), tokens;
+								  // linear_quant: tq = token count (batch of rows)
+	int32_t direct; // conv2d knob: ggml_conv_2d_direct
+	int32_t rowchunk; // conv2d knob: row-chunked im2col
+	int32_t flash; // attn knob: ggml_flash_attn_ext
+	int32_t tiled; // attn knob: query-tiled naive attention
+	uint64_t seed; // deterministic weight/input generation
 } st_case;
 
 // Executes the candidate (knobs as given) and the reference (knobs off) on
 // the primary device and returns the worst per-element interval violation
 // (tol = atol + rtol_auto * max|ref|, rtol_auto scaled by reduction length).
-ST_API double st_witness_check(const st_case * c);
+ST_API double st_witness_check(const st_case *c);
 
 // primary device name ("Vulkan0 (...)" or "CPU"), static storage
-ST_API const char * st_device(void);
+ST_API const char *st_device(void);
 
 // Flat-scalar variant for FFI hosts without struct marshalling (Lean 4
 // @[extern]): op 0 = conv2d, 1 = attn, 2 = linear_quant (c=in, oc=out,
@@ -55,22 +55,22 @@ ST_API const char * st_device(void);
 // attention (ignored for op 2).
 // Deterministic in all arguments.
 ST_API double st_witness_check_flat(uint32_t op, uint32_t w, uint32_t h, uint32_t c,
-                             uint32_t oc, uint32_t stride, uint32_t heads,
-                             uint32_t tq, uint32_t tk, uint32_t batch,
-                             uint32_t knobs, uint64_t seed);
+		uint32_t oc, uint32_t stride, uint32_t heads,
+		uint32_t tq, uint32_t tk, uint32_t batch,
+		uint32_t knobs, uint64_t seed);
 
 // gemm witness: pure f32×f32 matmul comparing CPU vs GPU at scale=2^scale_bits.
 // Returns interval violation (>1.0 = half-precision overflow detected).
 ST_API double st_witness_check_gemm(uint32_t m, uint32_t n, uint32_t k,
-                             uint32_t scale_bits, uint64_t seed);
+		uint32_t scale_bits, uint64_t seed);
 
 // Diagnostic probe (attn): real cosine + worst/mean abs diff between the
 // candidate (flash/tiled) and reference (naive) on the same backend, plus
 // optional .bin dumps of both tensors to dump_dir. Returns 0 on success.
 ST_API int st_attn_probe(uint32_t heads, uint32_t tq, uint32_t tk, uint32_t batch,
-                         uint32_t tiled, uint32_t flash, uint64_t seed,
-                         const char * dump_dir,
-                         double * out_cos, double * out_max, double * out_mean);
+		uint32_t tiled, uint32_t flash, uint64_t seed,
+		const char *dump_dir,
+		double *out_cos, double *out_max, double *out_mean);
 
 #ifdef __cplusplus
 }

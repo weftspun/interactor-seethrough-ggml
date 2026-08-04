@@ -1,16 +1,15 @@
 #include "pipeline.h"
 
 #include "clip.h"
+#include "ggml-alloc.h"
+#include "ggml-backend.h"
+#include "ggml-cpu.h"
+#include "ggml-impl.h"
 #include "image_utils.h"
 #include "lama.h"
 #include "scheduler.h"
 #include "unet_frame.h"
 #include "vae.h"
-
-#include "ggml-alloc.h"
-#include "ggml-backend.h"
-#include "ggml-cpu.h"
-#include "ggml-impl.h"
 
 #include <algorithm>
 #include <chrono>
@@ -22,27 +21,27 @@
 #include <random>
 
 const std::vector<std::string> BODY_TAGS_V3 = {
-    "front hair", "back hair", "head", "neck", "neckwear", "topwear", "handwear",
-    "bottomwear", "legwear", "footwear", "tail", "wings", "objects"
+	"front hair", "back hair", "head", "neck", "neckwear", "topwear", "handwear",
+	"bottomwear", "legwear", "footwear", "tail", "wings", "objects"
 };
 const std::vector<std::string> HEAD_TAGS_V3 = {
-    "headwear", "face", "irides", "eyebrow", "eyewhite", "eyelash", "eyewear",
-    "ears", "earwear", "nose", "mouth"
+	"headwear", "face", "irides", "eyebrow", "eyewhite", "eyelash", "eyewear",
+	"ears", "earwear", "nose", "mouth"
 };
 const std::vector<std::string> VALID_BODY_PARTS_V2 = {
-    "hair", "headwear", "face", "eyes", "eyewear", "ears", "earwear", "nose", "mouth",
-    "neck", "neckwear", "topwear", "handwear", "bottomwear", "legwear", "footwear",
-    "tail", "wings", "objects"
+	"hair", "headwear", "face", "eyes", "eyewear", "ears", "earwear", "nose", "mouth",
+	"neck", "neckwear", "topwear", "handwear", "bottomwear", "legwear", "footwear",
+	"tail", "wings", "objects"
 };
 
-static std::string kv_by_suffix(const Model & m, const char * suf) {
-    for (const auto & kv : m.config_json) {
-        size_t n = strlen(suf);
-        if (kv.first.size() > n && kv.first.compare(kv.first.size() - n, n, suf) == 0) {
-            return kv.second;
-        }
-    }
-    return "";
+static std::string kv_by_suffix(const Model &m, const char *suf) {
+	for (const auto &kv : m.config_json) {
+		size_t n = strlen(suf);
+		if (kv.first.size() > n && kv.first.compare(kv.first.size() - n, n, suf) == 0) {
+			return kv.second;
+		}
+	}
+	return "";
 }
 
 // ggml-vulkan's NV_coopmat2 flash-attention kernel is numerically broken on
@@ -59,33 +58,39 @@ static std::string kv_by_suffix(const Model & m, const char * suf) {
 // Lean witness harness) gets the fix regardless of which of them happens to
 // touch a GPU device first.
 static void disable_broken_coopmat2() {
-    static bool done = false;
-    if (done) return;
-    done = true;
+	static bool done = false;
+	if (done) {
+		return;
+	}
+	done = true;
 #if defined(_WIN32)
-    _putenv_s("GGML_VK_DISABLE_COOPMAT2", "1");
+	_putenv_s("GGML_VK_DISABLE_COOPMAT2", "1");
 #else
-    setenv("GGML_VK_DISABLE_COOPMAT2", "1", 1);
+	setenv("GGML_VK_DISABLE_COOPMAT2", "1", 1);
 #endif
 }
 
-static ggml_backend_dev_t pipe_gpu(const PipelineConfig & cfg) {
-    disable_broken_coopmat2();
-    // Discrete GPU first (NVIDIA via Vulkan etc), then fall back to any
-    // non-CPU accelerator (Apple Metal reports as IGPU, but it's a
-    // full-performance GPU — not a "slow integrated" chip).
-    ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
-    if (!dev) { dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU); }
-    return dev;
+static ggml_backend_dev_t pipe_gpu(const PipelineConfig &cfg) {
+	disable_broken_coopmat2();
+	// Discrete GPU first (NVIDIA via Vulkan etc), then fall back to any
+	// non-CPU accelerator (Apple Metal reports as IGPU, but it's a
+	// full-performance GPU — not a "slow integrated" chip).
+	ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+	if (!dev) {
+		dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
+	}
+	return dev;
 }
 
 // Metal backend detection: Vulkan-specific workarounds (conv_row_chunk,
 // tiled_naive_attn) produce zero output on Metal. Detect by device name
 // prefix — Metal devices are named "MTL0", "MTL1", etc.
 static bool pipe_is_metal(ggml_backend_dev_t d) {
-    if (!d) return false;
-    const char * name = ggml_backend_dev_name(d);
-    return name && name[0] == 'M' && name[1] == 'T' && name[2] == 'L';
+	if (!d) {
+		return false;
+	}
+	const char *name = ggml_backend_dev_name(d);
+	return name && name[0] == 'M' && name[1] == 'T' && name[2] == 'L';
 }
 
 // Cheap wall-clock attribution for the 1m12s speedup work (MADR 0010):
@@ -93,190 +98,207 @@ static bool pipe_is_metal(ggml_backend_dev_t d) {
 // backend-init / graph-build / alloc / compute costs, so accumulate those
 // here and print once per process at exit.
 static double now_s() {
-    using namespace std::chrono;
-    return duration<double>(steady_clock::now().time_since_epoch()).count();
+	using namespace std::chrono;
+	return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 struct PerfAccum {
-    double load = 0, backend_init = 0, graph_build = 0, alloc = 0, compute = 0, readback = 0;
-    long   n_backend = 0, n_graphs = 0;
-    ~PerfAccum() {
-        fprintf(stderr,
-                "[perf] model_load=%.1fs backend_init=%.1fs (n=%ld) graph_build=%.1fs "
-                "alloc=%.1fs compute=%.1fs readback=%.1fs (graphs=%ld)\n",
-                load, backend_init, n_backend, graph_build, alloc, compute, readback, n_graphs);
-    }
+	double load = 0, backend_init = 0, graph_build = 0, alloc = 0, compute = 0, readback = 0;
+	long n_backend = 0, n_graphs = 0;
+	~PerfAccum() {
+		fprintf(stderr,
+				"[perf] model_load=%.1fs backend_init=%.1fs (n=%ld) graph_build=%.1fs "
+				"alloc=%.1fs compute=%.1fs readback=%.1fs (graphs=%ld)\n",
+				load, backend_init, n_backend, graph_build, alloc, compute, readback, n_graphs);
+	}
 };
 static PerfAccum g_perf;
 
-static ggml_backend_t pipe_backend(const PipelineConfig & cfg) {
-    if (cfg.device == "cpu") {
-        // CPU route is blocklisted -- GPU (Vulkan) only. This isn't just
-        // "no silent fallback" anymore: --device cpu is rejected outright,
-        // same as any other unsupported --device value.
-        fprintf(stderr, "error: --device cpu is not supported -- this build is GPU"
-                        "-only (Vulkan). Run without --device (auto-selects the "
-                        "first GPU) or pass --device vulkan.\n");
-        exit(1);
-    }
-    ggml_backend_dev_t d = pipe_gpu(cfg);
-    if (d) {
-        // One backend per process, reused across every graph: creating a
-        // fresh Vulkan backend per run_graph_dev call (the old behavior)
-        // re-paid device/queue/descriptor setup dozens of times per run.
-        // Callers no longer free the returned backend (see pipe_backend_release).
-        static ggml_backend_t backend = ggml_backend_dev_init(d, nullptr);
-        return backend;
-    }
-    fprintf(stderr, "error: no GPU device found (Vulkan) -- this build is GPU-only, "
-                    "there is no CPU fallback.\n");
-    exit(1);
+static ggml_backend_t pipe_backend(const PipelineConfig &cfg) {
+	if (cfg.device == "cpu") {
+		// CPU route is blocklisted -- GPU (Vulkan) only. This isn't just
+		// "no silent fallback" anymore: --device cpu is rejected outright,
+		// same as any other unsupported --device value.
+		fprintf(stderr, "error: --device cpu is not supported -- this build is GPU"
+						"-only (Vulkan). Run without --device (auto-selects the "
+						"first GPU) or pass --device vulkan.\n");
+		exit(1);
+	}
+	ggml_backend_dev_t d = pipe_gpu(cfg);
+	if (d) {
+		// One backend per process, reused across every graph: creating a
+		// fresh Vulkan backend per run_graph_dev call (the old behavior)
+		// re-paid device/queue/descriptor setup dozens of times per run.
+		// Callers no longer free the returned backend (see pipe_backend_release).
+		static ggml_backend_t backend = ggml_backend_dev_init(d, nullptr);
+		return backend;
+	}
+	fprintf(stderr, "error: no GPU device found (Vulkan) -- this build is GPU-only, "
+					"there is no CPU fallback.\n");
+	exit(1);
 }
 
 // Paired with pipe_backend(): the backend is a process-lifetime singleton,
 // so "freeing" it is a no-op kept only to mark ownership at call sites.
 static void pipe_backend_release(ggml_backend_t) {}
 
-static bool pipe_load(const PipelineConfig & cfg, Model & m, const std::string & path,
-                      bool unet = false) {
-    const double t0 = now_s();
-    struct LoadTimer {
-        const std::string & p; double t0;
-        ~LoadTimer() {
-            double dt = now_s() - t0;
-            g_perf.load += dt;
-            fprintf(stderr, "[perf] load %s: %.2fs\n", p.c_str(), dt);
-        }
-    } lt{ path, t0 };
-    ggml_backend_dev_t d = pipe_gpu(cfg);
-    if (d) {
-        if (unet) {
-            m.flash_attn = !getenv("SEETHROUGH_NO_FLASH_UNET");  // K/V cast to f32 (unet_frame.cpp) ensures Metal backend selects the f32 kernel variant for flash_attn_ext
-                                    // VRAM; NOT for VAEs: ggml_conv_2d_direct is
-                                    // wrong for the encoder s2/p0 downsample path
-            // row-chunked im2col ahead of direct_conv for the stride-1 k3
-            // resnet convs: suspected real-weight-specific
-            // ggml_conv_2d_direct defect at exactly the 160x160/res=1280
-            // latent level (docs/ggml-upstream-issues.md #4) -- row-chunk
-            // is Lean-witness-validated exact and, unlike plain im2col,
-            // doesn't reintroduce the ~5.75GB per-level transient that
-            // direct_conv was avoiding (tiled 8-way, batch(frames)-
-            // generic). min_hw covers all 3 UNet latent levels (as low as
-            // direct_conv: ggml_conv_2d_direct (GGML_OP_CONV_2D) — Metal-native kernel,
-            // Lean-witness-validated exact for all 3 UNet latent levels.
-            // conv_row_chunk: row-chunked im2col for stride-1 k3 convs — im2col + mul_mat,
-            // Metal-native, Lean-witness-validated exact.
-            m.direct_conv = true;
-            m.conv_row_chunk = true;
-            m.conv_row_chunk_min_hw = 40 * 40;
-            m.tiled_naive_attn = !getenv("SEETHROUGH_NO_TILED_ATTN");  // VRAM-safe query-tiled naive attention (Vulkan-specific, not used on Metal)
-        }
-        // Query-tiled naive attention, VRAM-bounded so it can actually run
-        // at production token counts (unlike a plain flash_attn=false
-        // toggle, which OOMs). Applies to both attn_tokens (diffusion UNet,
-        // ahead of flash_attn) and attn_block (VAE mid_block/unet1024
-        // spatial self-attention, always-naive otherwise, unguarded at any
-        // T) -- not gated on `unet` since attn_block matters for the VAE
-        // model. Part of the confirmed 1280px-collapse fix (docs/ggml-
-        // upstream-issues.md #4): unet1024's first spatial self-attention
-        // (head_dim=8, 32 heads, T=6400) overflows Vulkan's ~4.295GB
-        // maxStorageBufferRange in the plain naive path, corrupting output
-        // silently -- confirmed exact against independent CPU ground truth
-        // when tiled. On by default now; SEETHROUGH_NO_TILED_ATTN reverts
-        // to the plain (defective, at this shape) path for A/B testing.
-        //
-        // A resolution-gated flash_attn preference was tried here (only
-        // for `unet`-flagged loads, `!unet || cfg.res > 768`) reasoning
-        // that flash_attn was proven exact for layerdiff-unet's shapes
-        // (docs #4, Lean witness cases at layerdiff's t6400/t1600 token
-        // counts). That reasoning had a real gap: `unet=true` covers BOTH
-        // layerdiff-unet AND marigold-unet identically here, and only
-        // layerdiff-unet's shapes were ever validated -- marigold-unet has
-        // a materially different architecture (12 vs 8 sample channels,
-        // different attention shapes) that was never gated. At res=768 the
-        // marigold-unet call flipped to flash_attn too and produced
-        // corrupted depth output for most tags (depth_median pinned to
-        // 1.0) -- caught and reverted. If flash_attn is worth revisiting,
-        // it needs its own validation for marigold-unet's specific shapes
-        // first, or a way to distinguish which UNet is loading, not a
-        // blanket `unet` flag.
-        // tiled_naive_attn is a Vulkan-specific VRAM workaround. On Metal
-        // it produces zero output (same root cause as conv_row_chunk).
-        bool is_metal = pipe_is_metal(d);
-        m.tiled_naive_attn = !is_metal && cfg.tiled_attn;
-        m.conv_f16 = cfg.conv_f16;
-        m.rowchunk_budget_mb = cfg.rowchunk_budget_mb;
-        m.linear_fast_all = cfg.linear_fast;
-        // A later re-run of the Lean kernel-witness gate (verify/KernelGate,
-        // 2026-07-20) found flash_attn_ext failing at layerdiff-unet's
-        // production shapes (t1600/t4096/t6400 self-attention, 77-token
-        // cross-attention, cross-frame/temporal) by 5x-12x tolerance --
-        // root-caused to ggml-vulkan's NV_coopmat2 flash-attention kernel
-        // specifically being wrong on this hardware, not to flash_attn's
-        // math or our usage of it: forcing the KHR_coopmat fallback
-        // (disable_broken_coopmat2() above, done automatically for every
-        // entry point) drops every one of those violations to <0.07. With
-        // that fixed at the source, the original "Lean-witness-validated
-        // exact for layerdiff-unet's shapes" claim holds for flash_attn.
-        // flash was briefly swapped for the query-tiled naive path because
-        // res=1280 OOM'd -- but the real 1280 hog was the conv im2col, not
-        // attention (the row-chunk budget bounds it now). With that fixed,
-        // flash fits at 1280 and is ~30% faster than tiled (body 128 vs 185s,
-        // head 115 vs 162s at 1280) while matching its output (mean
-        // depth_median diff 6e-4). So flash is the layerdiff default again;
-        // --tiled-attn-layerdiff opts back into the slower naive path for A/B.
-        if (unet && path.find("layerdiff-unet") != std::string::npos &&
-            !cfg.tiled_attn_layerdiff) {
-            m.tiled_naive_attn = false;
-        }
-        // Token-tile the layerdiff UNet's GEGLU feed-forward to keep its f32
-        // proj transient VRAM-bounded. Exact (per-token elementwise -> no
-        // seams), so always on regardless of resolution.
-        if (unet && path.find("layerdiff-unet") != std::string::npos) {
-            m.geglu_tile = true;
-        }
-        return m.load_backend(path.c_str(), ggml_backend_dev_buffer_type(d));
-    }
-    return m.load(path.c_str());
+static bool pipe_load(const PipelineConfig &cfg, Model &m, const std::string &path,
+		bool unet = false) {
+	const double t0 = now_s();
+	struct LoadTimer {
+		const std::string &p;
+		double t0;
+		~LoadTimer() {
+			double dt = now_s() - t0;
+			g_perf.load += dt;
+			fprintf(stderr, "[perf] load %s: %.2fs\n", p.c_str(), dt);
+		}
+	} lt{ path, t0 };
+	ggml_backend_dev_t d = pipe_gpu(cfg);
+	if (d) {
+		if (unet) {
+			m.flash_attn = !getenv("SEETHROUGH_NO_FLASH_UNET"); // K/V cast to f32 (unet_frame.cpp) ensures Metal backend selects the f32 kernel variant for flash_attn_ext
+																// VRAM; NOT for VAEs: ggml_conv_2d_direct is
+																// wrong for the encoder s2/p0 downsample path
+			// row-chunked im2col ahead of direct_conv for the stride-1 k3
+			// resnet convs: suspected real-weight-specific
+			// ggml_conv_2d_direct defect at exactly the 160x160/res=1280
+			// latent level (docs/ggml-upstream-issues.md #4) -- row-chunk
+			// is Lean-witness-validated exact and, unlike plain im2col,
+			// doesn't reintroduce the ~5.75GB per-level transient that
+			// direct_conv was avoiding (tiled 8-way, batch(frames)-
+			// generic). min_hw covers all 3 UNet latent levels (as low as
+			// direct_conv: ggml_conv_2d_direct (GGML_OP_CONV_2D) — Metal-native kernel,
+			// Lean-witness-validated exact for all 3 UNet latent levels.
+			// conv_row_chunk: row-chunked im2col for stride-1 k3 convs — im2col + mul_mat,
+			// Metal-native, Lean-witness-validated exact.
+			m.direct_conv = true;
+			m.conv_row_chunk = true;
+			m.conv_row_chunk_min_hw = 40 * 40;
+			m.tiled_naive_attn = !getenv("SEETHROUGH_NO_TILED_ATTN"); // VRAM-safe query-tiled naive attention (Vulkan-specific, not used on Metal)
+		}
+		// Query-tiled naive attention, VRAM-bounded so it can actually run
+		// at production token counts (unlike a plain flash_attn=false
+		// toggle, which OOMs). Applies to both attn_tokens (diffusion UNet,
+		// ahead of flash_attn) and attn_block (VAE mid_block/unet1024
+		// spatial self-attention, always-naive otherwise, unguarded at any
+		// T) -- not gated on `unet` since attn_block matters for the VAE
+		// model. Part of the confirmed 1280px-collapse fix (docs/ggml-
+		// upstream-issues.md #4): unet1024's first spatial self-attention
+		// (head_dim=8, 32 heads, T=6400) overflows Vulkan's ~4.295GB
+		// maxStorageBufferRange in the plain naive path, corrupting output
+		// silently -- confirmed exact against independent CPU ground truth
+		// when tiled. On by default now; SEETHROUGH_NO_TILED_ATTN reverts
+		// to the plain (defective, at this shape) path for A/B testing.
+		//
+		// A resolution-gated flash_attn preference was tried here (only
+		// for `unet`-flagged loads, `!unet || cfg.res > 768`) reasoning
+		// that flash_attn was proven exact for layerdiff-unet's shapes
+		// (docs #4, Lean witness cases at layerdiff's t6400/t1600 token
+		// counts). That reasoning had a real gap: `unet=true` covers BOTH
+		// layerdiff-unet AND marigold-unet identically here, and only
+		// layerdiff-unet's shapes were ever validated -- marigold-unet has
+		// a materially different architecture (12 vs 8 sample channels,
+		// different attention shapes) that was never gated. At res=768 the
+		// marigold-unet call flipped to flash_attn too and produced
+		// corrupted depth output for most tags (depth_median pinned to
+		// 1.0) -- caught and reverted. If flash_attn is worth revisiting,
+		// it needs its own validation for marigold-unet's specific shapes
+		// first, or a way to distinguish which UNet is loading, not a
+		// blanket `unet` flag.
+		// tiled_naive_attn is a Vulkan-specific VRAM workaround. On Metal
+		// it produces zero output (same root cause as conv_row_chunk).
+		bool is_metal = pipe_is_metal(d);
+		m.tiled_naive_attn = !is_metal && cfg.tiled_attn;
+		m.conv_f16 = cfg.conv_f16;
+		m.rowchunk_budget_mb = cfg.rowchunk_budget_mb;
+		m.linear_fast_all = cfg.linear_fast;
+		// A later re-run of the Lean kernel-witness gate (verify/KernelGate,
+		// 2026-07-20) found flash_attn_ext failing at layerdiff-unet's
+		// production shapes (t1600/t4096/t6400 self-attention, 77-token
+		// cross-attention, cross-frame/temporal) by 5x-12x tolerance --
+		// root-caused to ggml-vulkan's NV_coopmat2 flash-attention kernel
+		// specifically being wrong on this hardware, not to flash_attn's
+		// math or our usage of it: forcing the KHR_coopmat fallback
+		// (disable_broken_coopmat2() above, done automatically for every
+		// entry point) drops every one of those violations to <0.07. With
+		// that fixed at the source, the original "Lean-witness-validated
+		// exact for layerdiff-unet's shapes" claim holds for flash_attn.
+		// flash was briefly swapped for the query-tiled naive path because
+		// res=1280 OOM'd -- but the real 1280 hog was the conv im2col, not
+		// attention (the row-chunk budget bounds it now). With that fixed,
+		// flash fits at 1280 and is ~30% faster than tiled (body 128 vs 185s,
+		// head 115 vs 162s at 1280) while matching its output (mean
+		// depth_median diff 6e-4). So flash is the layerdiff default again;
+		// --tiled-attn-layerdiff opts back into the slower naive path for A/B.
+		if (unet && path.find("layerdiff-unet") != std::string::npos &&
+				!cfg.tiled_attn_layerdiff) {
+			m.tiled_naive_attn = false;
+		}
+		// Token-tile the layerdiff UNet's GEGLU feed-forward to keep its f32
+		// proj transient VRAM-bounded. Exact (per-token elementwise -> no
+		// seams), so always on regardless of resolution.
+		if (unet && path.find("layerdiff-unet") != std::string::npos) {
+			m.geglu_tile = true;
+		}
+		return m.load_backend(path.c_str(), ggml_backend_dev_buffer_type(d));
+	}
+	return m.load(path.c_str());
 }
 
 // one-shot graph: build outputs, set inputs, compute, read all outputs, free
 template <typename Build, typename SetInputs>
-static bool run_graph_dev(const PipelineConfig & cfg, Model & m, size_t max_nodes,
-                          Build build, SetInputs set_inputs,
-                          std::vector<std::vector<float>> & outs) {
-    size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
-    ggml_init_params ip = { meta, nullptr, true };
-    m.ctx_g = ggml_init(ip);
-    double tb = now_s();
-    std::vector<ggml_tensor *> out_t = build();
-    for (ggml_tensor * t : out_t) ggml_set_output(t);
-    double t1 = now_s(); g_perf.graph_build += t1 - tb; tb = t1;
-    ggml_backend_t backend = pipe_backend(cfg);
-    t1 = now_s(); g_perf.backend_init += t1 - tb; g_perf.n_backend++; tb = t1;
-    ggml_cgraph * gf = ggml_new_graph_custom(m.ctx_g, max_nodes, false);
-    for (ggml_tensor * t : out_t) ggml_build_forward_expand(gf, t);
-    t1 = now_s(); g_perf.graph_build += t1 - tb; tb = t1;
-    ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-    bool ok = ggml_gallocr_alloc_graph(alloc, gf);
-    t1 = now_s(); g_perf.alloc += t1 - tb; tb = t1; g_perf.n_graphs++;
-    if (ok) {
-        set_inputs();
-        ok = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
-        t1 = now_s(); g_perf.compute += t1 - tb; tb = t1;
-    }
-    if (ok) {
-        outs.resize(out_t.size());
-        for (size_t i = 0; i < out_t.size(); i++) {
-            outs[i].resize(ggml_nelements(out_t[i]));
-            ggml_backend_tensor_get(out_t[i], outs[i].data(), 0, outs[i].size() * 4);
-        }
-        g_perf.readback += now_s() - tb;
-    }
-    ggml_gallocr_free(alloc);
-    pipe_backend_release(backend);
-    ggml_free(m.ctx_g);
-    m.ctx_g = nullptr;
-    return ok;
+static bool run_graph_dev(const PipelineConfig &cfg, Model &m, size_t max_nodes,
+		Build build, SetInputs set_inputs,
+		std::vector<std::vector<float>> &outs) {
+	size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
+	ggml_init_params ip = { meta, nullptr, true };
+	m.ctx_g = ggml_init(ip);
+	double tb = now_s();
+	std::vector<ggml_tensor *> out_t = build();
+	for (ggml_tensor *t : out_t) {
+		ggml_set_output(t);
+	}
+	double t1 = now_s();
+	g_perf.graph_build += t1 - tb;
+	tb = t1;
+	ggml_backend_t backend = pipe_backend(cfg);
+	t1 = now_s();
+	g_perf.backend_init += t1 - tb;
+	g_perf.n_backend++;
+	tb = t1;
+	ggml_cgraph *gf = ggml_new_graph_custom(m.ctx_g, max_nodes, false);
+	for (ggml_tensor *t : out_t) {
+		ggml_build_forward_expand(gf, t);
+	}
+	t1 = now_s();
+	g_perf.graph_build += t1 - tb;
+	tb = t1;
+	ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+	bool ok = ggml_gallocr_alloc_graph(alloc, gf);
+	t1 = now_s();
+	g_perf.alloc += t1 - tb;
+	tb = t1;
+	g_perf.n_graphs++;
+	if (ok) {
+		set_inputs();
+		ok = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
+		t1 = now_s();
+		g_perf.compute += t1 - tb;
+		tb = t1;
+	}
+	if (ok) {
+		outs.resize(out_t.size());
+		for (size_t i = 0; i < out_t.size(); i++) {
+			outs[i].resize(ggml_nelements(out_t[i]));
+			ggml_backend_tensor_get(out_t[i], outs[i].data(), 0, outs[i].size() * 4);
+		}
+		g_perf.readback += now_s() - tb;
+	}
+	ggml_gallocr_free(alloc);
+	pipe_backend_release(backend);
+	ggml_free(m.ctx_g);
+	m.ctx_g = nullptr;
+	return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,637 +306,771 @@ static bool run_graph_dev(const PipelineConfig & cfg, Model & m, size_t max_node
 // ---------------------------------------------------------------------------
 
 // semantic identifier shared by --png-dir filenames and debug dumps
-static std::string safe_id(const std::string & tag) {
-    std::string s = tag;
-    std::replace(s.begin(), s.end(), ' ', '_');
-    return s;
+static std::string safe_id(const std::string &tag) {
+	std::string s = tag;
+	std::replace(s.begin(), s.end(), ' ', '_');
+	return s;
 }
 
-bool encode_tags(const PipelineConfig & cfg, const std::vector<std::string> & tags,
-                 std::vector<float> & ehs, std::vector<float> & pooled) {
-    const int F = (int) tags.size();
-    ehs.assign((size_t) F * 77 * 2048, 0.0f);
-    pooled.assign((size_t) F * 1280, 0.0f);
+bool encode_tags(const PipelineConfig &cfg, const std::vector<std::string> &tags,
+		std::vector<float> &ehs, std::vector<float> &pooled) {
+	const int F = (int)tags.size();
+	ehs.assign((size_t)F * 77 * 2048, 0.0f);
+	pooled.assign((size_t)F * 1280, 0.0f);
 
-    for (int enc = 0; enc < 2; enc++) {
-        Model m;
-        std::string path = cfg.model_dir + (enc == 0 ? "/layerdiff-te1.gguf" : "/layerdiff-te2.gguf");
-        if (!pipe_load(cfg, m, path)) { fprintf(stderr, "failed to load %s\n", path.c_str()); return false; }
-        ClipTokenizer tok;
-        if (!tok.load(kv_by_suffix(m, ".vocab_json"), kv_by_suffix(m, ".merges_txt"))) return false;
-        ClipParams p = clip_params_from_config(kv_by_suffix(m, ".config_json"));
-        const int32_t pad_id = enc == 0 ? tok.eos_id : 0;
-        const int d = p.d_model;
-        const int off = enc == 0 ? 0 : 768;    // concat slot in the 2048 dim
+	for (int enc = 0; enc < 2; enc++) {
+		Model m;
+		std::string path = cfg.model_dir + (enc == 0 ? "/layerdiff-te1.gguf" : "/layerdiff-te2.gguf");
+		if (!pipe_load(cfg, m, path)) {
+			fprintf(stderr, "failed to load %s\n", path.c_str());
+			return false;
+		}
+		ClipTokenizer tok;
+		if (!tok.load(kv_by_suffix(m, ".vocab_json"), kv_by_suffix(m, ".merges_txt"))) {
+			return false;
+		}
+		ClipParams p = clip_params_from_config(kv_by_suffix(m, ".config_json"));
+		const int32_t pad_id = enc == 0 ? tok.eos_id : 0;
+		const int d = p.d_model;
+		const int off = enc == 0 ? 0 : 768; // concat slot in the 2048 dim
 
-        for (int f = 0; f < F; f++) {
-            int eos_pos = 0;
-            std::vector<int32_t> ids = tok.encode_padded(tags[f], 77, pad_id, &eos_pos);
-            ggml_tensor * ids_t = nullptr;
-            std::vector<std::vector<float>> outs;
-            bool ok = run_graph_dev(cfg, m, 24576,
-                [&]() {
+		for (int f = 0; f < F; f++) {
+			int eos_pos = 0;
+			std::vector<int32_t> ids = tok.encode_padded(tags[f], 77, pad_id, &eos_pos);
+			ggml_tensor *ids_t = nullptr;
+			std::vector<std::vector<float>> outs;
+			bool ok = run_graph_dev(cfg, m, 24576, [&]() {
                     ids_t = ggml_new_tensor_1d(m.ctx_g, GGML_TYPE_I32, 77);
                     ggml_set_input(ids_t);
                     ggml_tensor * penult = nullptr, * final_out = nullptr;
                     clip_text_graph(m, ids_t, p, &penult, &final_out);
                     std::vector<ggml_tensor *> res = { penult };
-                    if (enc == 1) res.push_back(clip_pooled_projection(m, final_out, eos_pos));
-                    return res;
-                },
-                [&]() { ggml_backend_tensor_set(ids_t, ids.data(), 0, 77 * 4); },
-                outs);
-            if (!ok) return false;
-            for (int t = 0; t < 77; t++) {
-                std::copy(outs[0].begin() + (size_t) t * d, outs[0].begin() + (size_t) (t + 1) * d,
-                          ehs.begin() + ((size_t) f * 77 + t) * 2048 + off);
-            }
-            if (enc == 1) {
-                std::copy(outs[1].begin(), outs[1].end(), pooled.begin() + (size_t) f * 1280);
-            }
-        }
-        if (cfg.verbose) printf("[clip] encoder %d done (%d tags)\n", enc + 1, F);
-    }
-    return true;
+                    if (enc == 1){ res.push_back(clip_pooled_projection(m, final_out, eos_pos));
+}
+                    return res; }, [&]() { ggml_backend_tensor_set(ids_t, ids.data(), 0, 77 * 4); }, outs);
+			if (!ok) {
+				return false;
+			}
+			for (int t = 0; t < 77; t++) {
+				std::copy(outs[0].begin() + (size_t)t * d, outs[0].begin() + (size_t)(t + 1) * d,
+						ehs.begin() + ((size_t)f * 77 + t) * 2048 + off);
+			}
+			if (enc == 1) {
+				std::copy(outs[1].begin(), outs[1].end(), pooled.begin() + (size_t)f * 1280);
+			}
+		}
+		if (cfg.verbose) {
+			printf("[clip] encoder %d done (%d tags)\n", enc + 1, F);
+		}
+	}
+	return true;
 }
 
 // ---------------------------------------------------------------------------
 // stage 2: layerdiff diffusion pass
 // ---------------------------------------------------------------------------
 
-bool layerdiff_pass(const PipelineConfig & cfg, const Image & page_rgb,
-                    const std::vector<float> & ehs, const std::vector<float> & pooled,
-                    int group_index, std::vector<Image> & layers_out,
-                    const std::vector<std::string> & tags) {
-    const int RES = page_rgb.w, ZR = RES / 8;
-    const int F = (int) pooled.size() / 1280;
-    const float SCALE = 0.13025f;
-    const size_t DZ = (size_t) ZR * ZR * 4, D = DZ * F;
+bool layerdiff_pass(const PipelineConfig &cfg, const Image &page_rgb,
+		const std::vector<float> &ehs, const std::vector<float> &pooled,
+		int group_index, std::vector<Image> &layers_out,
+		const std::vector<std::string> &tags) {
+	const int RES = page_rgb.w, ZR = RES / 8;
+	const int F = (int)pooled.size() / 1280;
+	const float SCALE = 0.13025f;
+	const size_t DZ = (size_t)ZR * ZR * 4, D = DZ * F;
 
-    // page latent (SDXL VAE, f32 weights)
-    std::vector<float> c_concat;
-    {
-        Model mv;
-        std::string p = cfg.model_dir + "/layerdiff-vae.gguf";
-        if (!pipe_load(cfg, mv, p)) { fprintf(stderr, "failed to load %s\n", p.c_str()); return false; }
-        std::vector<float> feed((size_t) RES * RES * 3);
-        for (size_t i = 0; i < (size_t) RES * RES; i++) {
-            for (int c = 0; c < 3; c++) {
-                feed[(size_t) c * RES * RES + i] = page_rgb.data[i * page_rgb.c + c] * 2.0f - 1.0f;
-            }
-        }
-        ggml_tensor * x = nullptr;
-        std::vector<std::vector<float>> outs;
-        // vae_encode_tiled: this VAE's own trained config is sample_size=512;
-        // encoding untiled far beyond that (e.g. 1280) pushes some resnets
-        // into extreme near-cancelling activations that amplify ordinary
-        // GPU float rounding into a visible defect (docs/ggml-upstream-
-        // issues.md #4). Tiling matches diffusers' own enable_tiling()
-        // behavior and keeps every tile within the trained scale; passes
-        // through to plain vae_encode when RES already fits one tile.
-        // Needs a much larger node budget: 16 tiles at res=1280, each
-        // running the full encoder graph.
-        bool ok = run_graph_dev(cfg, mv, 294912,
-            [&]() {
+	// page latent (SDXL VAE, f32 weights)
+	std::vector<float> c_concat;
+	{
+		Model mv;
+		std::string p = cfg.model_dir + "/layerdiff-vae.gguf";
+		if (!pipe_load(cfg, mv, p)) {
+			fprintf(stderr, "failed to load %s\n", p.c_str());
+			return false;
+		}
+		std::vector<float> feed((size_t)RES * RES * 3);
+		for (size_t i = 0; i < (size_t)RES * RES; i++) {
+			for (int c = 0; c < 3; c++) {
+				feed[(size_t)c * RES * RES + i] = page_rgb.data[i * page_rgb.c + c] * 2.0f - 1.0f;
+			}
+		}
+		ggml_tensor *x = nullptr;
+		std::vector<std::vector<float>> outs;
+		// vae_encode_tiled: this VAE's own trained config is sample_size=512;
+		// encoding untiled far beyond that (e.g. 1280) pushes some resnets
+		// into extreme near-cancelling activations that amplify ordinary
+		// GPU float rounding into a visible defect (docs/ggml-upstream-
+		// issues.md #4). Tiling matches diffusers' own enable_tiling()
+		// behavior and keeps every tile within the trained scale; passes
+		// through to plain vae_encode when RES already fits one tile.
+		// Needs a much larger node budget: 16 tiles at res=1280, each
+		// running the full encoder graph.
+		bool ok = run_graph_dev(cfg, mv, 294912, [&]() {
                 x = ggml_new_tensor_4d(mv.ctx_g, GGML_TYPE_F32, RES, RES, 3, 1);
                 ggml_set_input(x);
-                return std::vector<ggml_tensor *>{ ggml_scale(mv.ctx_g, vae_encode_tiled(mv, x), SCALE) };
-            },
-            [&]() { ggml_backend_tensor_set(x, feed.data(), 0, feed.size() * 4); },
-            outs);
-        if (!ok) return false;
-        c_concat = std::move(outs[0]);
-        if (!cfg.debug_dir.empty()) {
-            double s = 0, s2 = 0;
-            for (float v : c_concat) { s += v; s2 += (double) v * v; }
-            double mu = s / c_concat.size();
-            printf("[debug] c_concat mean=%.4f std=%.4f\n", mu,
-                   sqrt(std::max(0.0, s2 / c_concat.size() - mu * mu)));
-        }
-        if (cfg.verbose) printf("[layerdiff] page latent done\n");
-    }
+                return std::vector<ggml_tensor *>{ ggml_scale(mv.ctx_g, vae_encode_tiled(mv, x), SCALE) }; }, [&]() { ggml_backend_tensor_set(x, feed.data(), 0, feed.size() * 4); }, outs);
+		if (!ok) {
+			return false;
+		}
+		c_concat = std::move(outs[0]);
+		if (!cfg.debug_dir.empty()) {
+			double s = 0, s2 = 0;
+			for (float v : c_concat) {
+				s += v;
+				s2 += (double)v * v;
+			}
+			double mu = s / c_concat.size();
+			printf("[debug] c_concat mean=%.4f std=%.4f\n", mu,
+					sqrt(std::max(0.0, s2 / c_concat.size() - mu * mu)));
+		}
+		if (cfg.verbose) {
+			printf("[layerdiff] page latent done\n");
+		}
+	}
 
-    // noise: same init across frames + per-step SDE noise (own RNG,
-    // statistically equivalent to upstream's)
-    std::mt19937_64 rng(cfg.seed + group_index);
-    std::normal_distribution<float> nrm(0.0f, 1.0f);
-    std::vector<float> lat(D);
-    {
-        std::vector<float> init(DZ);
-        for (float & v : init) v = nrm(rng);
-        for (int f = 0; f < F; f++) std::copy(init.begin(), init.end(), lat.begin() + f * DZ);
-    }
+	// noise: same init across frames + per-step SDE noise (own RNG,
+	// statistically equivalent to upstream's)
+	std::mt19937_64 rng(cfg.seed + group_index);
+	std::normal_distribution<float> nrm(0.0f, 1.0f);
+	std::vector<float> lat(D);
+	{
+		std::vector<float> init(DZ);
+		for (float &v : init) {
+			v = nrm(rng);
+		}
+		for (int f = 0; f < F; f++) {
+			std::copy(init.begin(), init.end(), lat.begin() + f * DZ);
+		}
+	}
 
-    DpmSolverSDE sch;
-    sch.set_timesteps(cfg.steps);
+	DpmSolverSDE sch;
+	sch.set_timesteps(cfg.steps);
 
-    {
-        Model m;
-        std::string p = cfg.model_dir + "/layerdiff-unet.gguf";
-        if (!pipe_load(cfg, m, p, true)) { fprintf(stderr, "failed to load %s\n", p.c_str()); return false; }
-        // Fast (backend-default-precision) linear GEMMs for the BODY pass
-        // only: the full-pipeline SEETHROUGH_LINEAR_FAST A/B (2026-07-20)
-        // drifted only tiny head-pass facial layers (eyebrow/eyewear/mouth/
-        // nose IoU 0.23-0.83) while every body-pass layer stayed >=0.99, so
-        // the head pass (group_index 1, where all the small features live)
-        // keeps GGML_PREC_F32. SEETHROUGH_NO_LINEAR_FAST_BODY reverts.
-        m.linear_fast = cfg.linear_fast || (group_index == 0 && cfg.linear_fast_body);
+	{
+		Model m;
+		std::string p = cfg.model_dir + "/layerdiff-unet.gguf";
+		if (!pipe_load(cfg, m, p, true)) {
+			fprintf(stderr, "failed to load %s\n", p.c_str());
+			return false;
+		}
+		// Fast (backend-default-precision) linear GEMMs for the BODY pass
+		// only: the full-pipeline SEETHROUGH_LINEAR_FAST A/B (2026-07-20)
+		// drifted only tiny head-pass facial layers (eyebrow/eyewear/mouth/
+		// nose IoU 0.23-0.83) while every body-pass layer stayed >=0.99, so
+		// the head pass (group_index 1, where all the small features live)
+		// keeps GGML_PREC_F32. SEETHROUGH_NO_LINEAR_FAST_BODY reverts.
+		m.linear_fast = cfg.linear_fast || (group_index == 0 && cfg.linear_fast_body);
 
-        size_t max_nodes = 294912;
-        size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
-        ggml_init_params ip = { meta, nullptr, true };
-        m.ctx_g = ggml_init(ip);
-        ggml_context * ctx = m.ctx_g;
+		size_t max_nodes = 294912;
+		size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
+		ggml_init_params ip = { meta, nullptr, true };
+		m.ctx_g = ggml_init(ip);
+		ggml_context *ctx = m.ctx_g;
 
-        ggml_tensor * sample = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, ZR, ZR, 8, F);
-        ggml_tensor * ehs_t  = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2048, 77, F);
-        ggml_tensor * text   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1280, F);
-        ggml_tensor * tids   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 6, F);
-        ggml_tensor * ts     = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, F);
-        for (ggml_tensor * t : { sample, ehs_t, text, tids, ts }) ggml_set_input(t);
+		ggml_tensor *sample = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, ZR, ZR, 8, F);
+		ggml_tensor *ehs_t = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2048, 77, F);
+		ggml_tensor *text = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1280, F);
+		ggml_tensor *tids = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 6, F);
+		ggml_tensor *ts = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, F);
+		for (ggml_tensor *t : { sample, ehs_t, text, tids, ts }) {
+			ggml_set_input(t);
+		}
 
-        const std::string gi = std::to_string(group_index);
-        ggml_tensor * ehs2 = ggml_add(ctx, ehs_t, group_embedding(m, ehs_t, "group_embeds2." + gi));
-        ggml_tensor * emb = time_embed_mlp(m, ggml_timestep_embedding(ctx, ts, 320, 10000),
-                                           "time_embedding");
-        ggml_tensor * aug = ggml_add(ctx, text, group_embedding(m, text, "group_embeds." + gi));
-        emb = ggml_add(ctx, emb, sdxl_add_embed(m, aug, tids));
-        ggml_tensor * out = unet_frame_forward(m, sample, emb, ehs2);
-        ggml_set_output(out);
+		const std::string gi = std::to_string(group_index);
+		ggml_tensor *ehs2 = ggml_add(ctx, ehs_t, group_embedding(m, ehs_t, "group_embeds2." + gi));
+		ggml_tensor *emb = time_embed_mlp(m, ggml_timestep_embedding(ctx, ts, 320, 10000),
+				"time_embedding");
+		ggml_tensor *aug = ggml_add(ctx, text, group_embedding(m, text, "group_embeds." + gi));
+		emb = ggml_add(ctx, emb, sdxl_add_embed(m, aug, tids));
+		ggml_tensor *out = unet_frame_forward(m, sample, emb, ehs2);
+		ggml_set_output(out);
 
-        ggml_backend_t backend = pipe_backend(cfg);
-        ggml_cgraph * gf = ggml_new_graph_custom(ctx, max_nodes, false);
-        ggml_build_forward_expand(gf, out);
-        ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-        if (!ggml_gallocr_alloc_graph(alloc, gf)) { fprintf(stderr, "alloc failed\n"); return false; }
-        std::vector<double> step_times;
+		ggml_backend_t backend = pipe_backend(cfg);
+		ggml_cgraph *gf = ggml_new_graph_custom(ctx, max_nodes, false);
+		ggml_build_forward_expand(gf, out);
+		ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+		if (!ggml_gallocr_alloc_graph(alloc, gf)) {
+			fprintf(stderr, "alloc failed\n");
+			return false;
+		}
+		std::vector<double> step_times;
 
-        std::vector<float> tid_v(6 * F), eps(D), input((size_t) ZR * ZR * 8 * F), noise(D);
-        for (int f = 0; f < F; f++) {
-            const float ids[6] = { (float) RES, (float) RES, 0, 0, (float) RES, (float) RES };
-            for (int i = 0; i < 6; i++) tid_v[f * 6 + i] = ids[i];
-        }
+		std::vector<float> tid_v(6 * F), eps(D), input((size_t)ZR * ZR * 8 * F), noise(D);
+		for (int f = 0; f < F; f++) {
+			const float ids[6] = { (float)RES, (float)RES, 0, 0, (float)RES, (float)RES };
+			for (int i = 0; i < 6; i++) {
+				tid_v[f * 6 + i] = ids[i];
+			}
+		}
 
-        for (int s = 0; s < cfg.steps; s++) {
-            for (int f = 0; f < F; f++) {
-                std::copy(lat.begin() + f * DZ, lat.begin() + (f + 1) * DZ,
-                          input.begin() + f * 2 * DZ);
-                std::copy(c_concat.begin(), c_concat.end(), input.begin() + f * 2 * DZ + DZ);
-            }
-            // gallocr recycles input buffers: re-set ALL inputs every compute
-            ggml_backend_tensor_set(ehs_t, ehs.data(), 0, ehs.size() * 4);
-            ggml_backend_tensor_set(text, pooled.data(), 0, pooled.size() * 4);
-            ggml_backend_tensor_set(tids, tid_v.data(), 0, tid_v.size() * 4);
-            ggml_backend_tensor_set(sample, input.data(), 0, input.size() * 4);
-            std::vector<float> tstep(F, (float) sch.timesteps[s]);
-            ggml_backend_tensor_set(ts, tstep.data(), 0, F * 4);
+		for (int s = 0; s < cfg.steps; s++) {
+			for (int f = 0; f < F; f++) {
+				std::copy(lat.begin() + f * DZ, lat.begin() + (f + 1) * DZ,
+						input.begin() + f * 2 * DZ);
+				std::copy(c_concat.begin(), c_concat.end(), input.begin() + f * 2 * DZ + DZ);
+			}
+			// gallocr recycles input buffers: re-set ALL inputs every compute
+			ggml_backend_tensor_set(ehs_t, ehs.data(), 0, ehs.size() * 4);
+			ggml_backend_tensor_set(text, pooled.data(), 0, pooled.size() * 4);
+			ggml_backend_tensor_set(tids, tid_v.data(), 0, tid_v.size() * 4);
+			ggml_backend_tensor_set(sample, input.data(), 0, input.size() * 4);
+			std::vector<float> tstep(F, (float)sch.timesteps[s]);
+			ggml_backend_tensor_set(ts, tstep.data(), 0, F * 4);
 
-            const double st0 = now_s();
-            // Log per-op-type counts for the first step
-            if (s == 0) {
-                int n_op[GGML_OP_COUNT] = {0};
-                for (int i = 0; i < gf->n_nodes; i++)
-                    n_op[gf->nodes[i]->op]++;
-                fprintf(stderr, "[perf] layerdiff op counts:");
-                for (int op = 0; op < GGML_OP_COUNT; op++)
-                    if (n_op[op])
-                        fprintf(stderr, " %s=%d", ggml_op_name((enum ggml_op)op), n_op[op]);
-                fprintf(stderr, "\n");
-            }
-            if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) return false;
-            ggml_backend_tensor_get(out, eps.data(), 0, D * 4);
-            step_times.push_back(now_s() - st0);
-            for (float & v : noise) v = nrm(rng);
-            sch.step(lat, eps, noise);
-            if (!cfg.debug_dir.empty()) {
-                double acc = 0, acc2 = 0;
-                for (float v : lat) { acc += v; acc2 += (double) v * v; }
-                double mu = acc / lat.size();
-                printf("[debug] step %d eps0=%.4f lat mean=%.4f std=%.4f\n", s,
-                       (double) eps[0], mu, sqrt(std::max(0.0, acc2 / lat.size() - mu * mu)));
-            }
-            if (cfg.verbose) { printf("[layerdiff] step %d/%d (t=%d)\r", s + 1, cfg.steps, sch.timesteps[s]); fflush(stdout); }
-        }
-        if (cfg.verbose) printf("\n");
-        {
-            double tot = 0; for (double v : step_times) tot += v;
-            fprintf(stderr, "[perf] layerdiff unet loop: %.1fs total, first=%.2fs, rest_avg=%.2fs (%zu steps)\n",
-                    tot, step_times.empty() ? 0.0 : step_times[0],
-                    step_times.size() > 1 ? (tot - step_times[0]) / (step_times.size() - 1) : 0.0,
-                    step_times.size());
-        }
-        ggml_gallocr_free(alloc);
-        pipe_backend_release(backend);
-        ggml_free(ctx);
-        m.ctx_g = nullptr;
-    }
+			const double st0 = now_s();
+			// Log per-op-type counts for the first step
+			if (s == 0) {
+				int n_op[GGML_OP_COUNT] = { 0 };
+				for (int i = 0; i < gf->n_nodes; i++) {
+					n_op[gf->nodes[i]->op]++;
+				}
+				fprintf(stderr, "[perf] layerdiff op counts:");
+				for (int op = 0; op < GGML_OP_COUNT; op++) {
+					if (n_op[op]) {
+						fprintf(stderr, " %s=%d", ggml_op_name((enum ggml_op)op), n_op[op]);
+					}
+				}
+				fprintf(stderr, "\n");
+			}
+			if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+				return false;
+			}
+			ggml_backend_tensor_get(out, eps.data(), 0, D * 4);
+			step_times.push_back(now_s() - st0);
+			for (float &v : noise) {
+				v = nrm(rng);
+			}
+			sch.step(lat, eps, noise);
+			if (!cfg.debug_dir.empty()) {
+				double acc = 0, acc2 = 0;
+				for (float v : lat) {
+					acc += v;
+					acc2 += (double)v * v;
+				}
+				double mu = acc / lat.size();
+				printf("[debug] step %d eps0=%.4f lat mean=%.4f std=%.4f\n", s,
+						(double)eps[0], mu, sqrt(std::max(0.0, acc2 / lat.size() - mu * mu)));
+			}
+			if (cfg.verbose) {
+				printf("[layerdiff] step %d/%d (t=%d)\r", s + 1, cfg.steps, sch.timesteps[s]);
+				fflush(stdout);
+			}
+		}
+		if (cfg.verbose) {
+			printf("\n");
+		}
+		{
+			double tot = 0;
+			for (double v : step_times) {
+				tot += v;
+			}
+			fprintf(stderr, "[perf] layerdiff unet loop: %.1fs total, first=%.2fs, rest_avg=%.2fs (%zu steps)\n",
+					tot, step_times.empty() ? 0.0 : step_times[0],
+					step_times.size() > 1 ? (tot - step_times[0]) / (step_times.size() - 1) : 0.0,
+					step_times.size());
+		}
+		ggml_gallocr_free(alloc);
+		pipe_backend_release(backend);
+		ggml_free(ctx);
+		m.ctx_g = nullptr;
+	}
 
-    // decode each frame through the TransparentVAE chain
-    {
-        Model mv;
-        std::string p1 = cfg.model_dir + "/layerdiff-vae.gguf";
-        std::string p2 = cfg.model_dir + "/trans-vae.gguf";
-        if (!pipe_load(cfg, mv, p1) || !pipe_load(cfg, mv, p2)) return false;
-        if (pipe_gpu(cfg)) {
-            // On Metal, direct_conv works correctly; the row-chunked
-            // im2col path is Lean-witness-validated exact for all UNet shapes.
-            // Enable both: row_chunk for stride-1 k3 convs, direct_conv for stride-2 downsamples.
-            mv.conv_row_chunk = true;
-        }
+	// decode each frame through the TransparentVAE chain
+	{
+		Model mv;
+		std::string p1 = cfg.model_dir + "/layerdiff-vae.gguf";
+		std::string p2 = cfg.model_dir + "/trans-vae.gguf";
+		if (!pipe_load(cfg, mv, p1) || !pipe_load(cfg, mv, p2)) {
+			return false;
+		}
+		if (pipe_gpu(cfg)) {
+			// On Metal, direct_conv works correctly; the row-chunked
+			// im2col path is Lean-witness-validated exact for all UNet shapes.
+			// Enable both: row_chunk for stride-1 k3 convs, direct_conv for stride-2 downsamples.
+			mv.conv_row_chunk = true;
+		}
 
-        layers_out.assign(F, Image{});
-        // Frames decoded per-frame (NB=1) through one reused graph.
-        // SEETHROUGH_DECODE_BATCH=N batches N frames per graph -- TRIED AND
-        // REJECTED as the default (2026-07-20): batch=4 measured SLOWER end
-        // to end (5m52s vs 5m06s; the 4x-larger intermediates slowed the
-        // whole head stage 130s->168s, so the per-dispatch overhead it
-        // amortizes was already hidden behind GPU pipelining) and drifted
-        // small layers (eyebrow IoU 0.909 -- batch width changes GEMM
-        // tiling and thus accumulation order). Kept only as an experiment
-        // knob; the decoder's largest per-frame f32 intermediate (~512MB)
-        // also caps any batch at ~8 before hitting Vulkan's ~4.29GB
-        // maxStorageBufferRange.
-        size_t max_nodes = 393216;
-        const int NB = std::max(1, cfg.decode_batch);
-        ggml_backend_t backend = pipe_backend(cfg);
-        struct DecGraph {
-            ggml_context * ctx = nullptr;
-            ggml_tensor * zt = nullptr, * out = nullptr;
-            ggml_cgraph * gf = nullptr;
-            ggml_gallocr_t alloc = nullptr;
-        };
-        std::map<int, DecGraph> graphs;   // batch size -> prepared graph
-        auto get_graph = [&](int nb) -> DecGraph * {
-            auto it = graphs.find(nb);
-            if (it != graphs.end()) { return &it->second; }
-            DecGraph g;
-            size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
-            ggml_init_params ip = { meta, nullptr, true };
-            g.ctx = ggml_init(ip);
-            mv.ctx_g = g.ctx;
-            g.zt = ggml_new_tensor_4d(g.ctx, GGML_TYPE_F32, ZR, ZR, 4, nb);
-            ggml_set_input(g.zt);
-            g.out = trans_vae_decode(mv, g.zt);
-            ggml_set_output(g.out);
-            g.gf = ggml_new_graph_custom(g.ctx, max_nodes, false);
-            ggml_build_forward_expand(g.gf, g.out);
-            g.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-            if (!ggml_gallocr_alloc_graph(g.alloc, g.gf)) {
-                fprintf(stderr, "decode alloc failed (batch %d)\n", nb);
-                return nullptr;
-            }
-            return &graphs.emplace(nb, g).first->second;
-        };
-        std::vector<std::vector<float>> outs(1);
-        for (int f0 = 0; f0 < F; f0 += NB) {
-            const int nb = std::min(NB, F - f0);
-            DecGraph * g = get_graph(nb);
-            if (!g) { return false; }
-            std::vector<float> z((size_t) nb * DZ);
-            for (size_t i = 0; i < z.size(); i++) z[i] = lat[(size_t) f0 * DZ + i] / SCALE;
-            ggml_backend_tensor_set(g->zt, z.data(), 0, z.size() * 4);
-            if (ggml_backend_graph_compute(backend, g->gf) != GGML_STATUS_SUCCESS) { return false; }
-            outs[0].resize(ggml_nelements(g->out));
-            ggml_backend_tensor_get(g->out, outs[0].data(), 0, outs[0].size() * 4);
-            for (int fb = 0; fb < nb; fb++) {
-            const int f = f0 + fb;
-            const size_t frame_off = (size_t) fb * RES * RES * 4;
-            // planar RGBA -> interleaved RGBA
-            Image & im = layers_out[f];
-            im.w = im.h = RES; im.c = 4;
-            im.data.resize((size_t) RES * RES * 4);
-            const size_t P = (size_t) RES * RES;
-            // TransparentVAE output is ARGB planar: ch0 = alpha, ch1..3 = RGB
-            for (size_t i = 0; i < P; i++) {
-                for (int c = 0; c < 3; c++) im.data[i * 4 + c] = outs[0][frame_off + (size_t) (c + 1) * P + i];
-                im.data[i * 4 + 3] = outs[0][frame_off + i];
-            }
-            if (!cfg.debug_dir.empty()) {
-                double amax = 0, rmax = 0;
-                for (size_t i = 0; i < P; i++) {
-                    rmax = std::max(rmax, (double) im.data[i * 4]);
-                    amax = std::max(amax, (double) im.data[i * 4 + 3]);
-                }
-                // named by the actual tag (falls back to a group/index pair
-                // only if no tag list was passed in): layerdiff_pass runs
-                // once for the body pass (F=13) and once for the head pass
-                // (F=11) with the SAME cfg.debug_dir -- an unqualified
-                // "frame_N" name let the head pass's decode silently
-                // overwrite the body pass's frame_0..frame_10 dumps, which
-                // once produced a misleading debug artifact (a dump
-                // labeled like body-pass "back hair" that was actually
-                // stale head-pass "face" data).
-                std::string tag_id = (f < (int) tags.size())
-                    ? safe_id(tags[f]) : ("group" + std::to_string(group_index) + "_" + std::to_string(f));
-                printf("[debug] %s decoded rgb_max=%.4f alpha_max=%.4f\n", tag_id.c_str(), rmax, amax);
-                save_image(cfg.debug_dir + "/decode_" + tag_id + ".png", im);
-            }
-            if (cfg.verbose) { printf("[layerdiff] decode %d/%d\r", f + 1, F); fflush(stdout); }
-            }   // fb
-        }
-        if (cfg.verbose) printf("\n");
-        for (auto & kv : graphs) {
-            ggml_gallocr_free(kv.second.alloc);
-            ggml_free(kv.second.ctx);
-        }
-        pipe_backend_release(backend);
-        mv.ctx_g = nullptr;
-    }
-    return true;
+		layers_out.assign(F, Image{});
+		// Frames decoded per-frame (NB=1) through one reused graph.
+		// SEETHROUGH_DECODE_BATCH=N batches N frames per graph -- TRIED AND
+		// REJECTED as the default (2026-07-20): batch=4 measured SLOWER end
+		// to end (5m52s vs 5m06s; the 4x-larger intermediates slowed the
+		// whole head stage 130s->168s, so the per-dispatch overhead it
+		// amortizes was already hidden behind GPU pipelining) and drifted
+		// small layers (eyebrow IoU 0.909 -- batch width changes GEMM
+		// tiling and thus accumulation order). Kept only as an experiment
+		// knob; the decoder's largest per-frame f32 intermediate (~512MB)
+		// also caps any batch at ~8 before hitting Vulkan's ~4.29GB
+		// maxStorageBufferRange.
+		size_t max_nodes = 393216;
+		const int NB = std::max(1, cfg.decode_batch);
+		ggml_backend_t backend = pipe_backend(cfg);
+		struct DecGraph {
+			ggml_context *ctx = nullptr;
+			ggml_tensor *zt = nullptr, *out = nullptr;
+			ggml_cgraph *gf = nullptr;
+			ggml_gallocr_t alloc = nullptr;
+		};
+		std::map<int, DecGraph> graphs; // batch size -> prepared graph
+		auto get_graph = [&](int nb) -> DecGraph * {
+			auto it = graphs.find(nb);
+			if (it != graphs.end()) {
+				return &it->second;
+			}
+			DecGraph g;
+			size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
+			ggml_init_params ip = { meta, nullptr, true };
+			g.ctx = ggml_init(ip);
+			mv.ctx_g = g.ctx;
+			g.zt = ggml_new_tensor_4d(g.ctx, GGML_TYPE_F32, ZR, ZR, 4, nb);
+			ggml_set_input(g.zt);
+			g.out = trans_vae_decode(mv, g.zt);
+			ggml_set_output(g.out);
+			g.gf = ggml_new_graph_custom(g.ctx, max_nodes, false);
+			ggml_build_forward_expand(g.gf, g.out);
+			g.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+			if (!ggml_gallocr_alloc_graph(g.alloc, g.gf)) {
+				fprintf(stderr, "decode alloc failed (batch %d)\n", nb);
+				return nullptr;
+			}
+			return &graphs.emplace(nb, g).first->second;
+		};
+		std::vector<std::vector<float>> outs(1);
+		for (int f0 = 0; f0 < F; f0 += NB) {
+			const int nb = std::min(NB, F - f0);
+			DecGraph *g = get_graph(nb);
+			if (!g) {
+				return false;
+			}
+			std::vector<float> z((size_t)nb * DZ);
+			for (size_t i = 0; i < z.size(); i++) {
+				z[i] = lat[(size_t)f0 * DZ + i] / SCALE;
+			}
+			ggml_backend_tensor_set(g->zt, z.data(), 0, z.size() * 4);
+			if (ggml_backend_graph_compute(backend, g->gf) != GGML_STATUS_SUCCESS) {
+				return false;
+			}
+			outs[0].resize(ggml_nelements(g->out));
+			ggml_backend_tensor_get(g->out, outs[0].data(), 0, outs[0].size() * 4);
+			for (int fb = 0; fb < nb; fb++) {
+				const int f = f0 + fb;
+				const size_t frame_off = (size_t)fb * RES * RES * 4;
+				// planar RGBA -> interleaved RGBA
+				Image &im = layers_out[f];
+				im.w = im.h = RES;
+				im.c = 4;
+				im.data.resize((size_t)RES * RES * 4);
+				const size_t P = (size_t)RES * RES;
+				// TransparentVAE output is ARGB planar: ch0 = alpha, ch1..3 = RGB
+				for (size_t i = 0; i < P; i++) {
+					for (int c = 0; c < 3; c++) {
+						im.data[i * 4 + c] = outs[0][frame_off + (size_t)(c + 1) * P + i];
+					}
+					im.data[i * 4 + 3] = outs[0][frame_off + i];
+				}
+				if (!cfg.debug_dir.empty()) {
+					double amax = 0, rmax = 0;
+					for (size_t i = 0; i < P; i++) {
+						rmax = std::max(rmax, (double)im.data[i * 4]);
+						amax = std::max(amax, (double)im.data[i * 4 + 3]);
+					}
+					// named by the actual tag (falls back to a group/index pair
+					// only if no tag list was passed in): layerdiff_pass runs
+					// once for the body pass (F=13) and once for the head pass
+					// (F=11) with the SAME cfg.debug_dir -- an unqualified
+					// "frame_N" name let the head pass's decode silently
+					// overwrite the body pass's frame_0..frame_10 dumps, which
+					// once produced a misleading debug artifact (a dump
+					// labeled like body-pass "back hair" that was actually
+					// stale head-pass "face" data).
+					std::string tag_id = (f < (int)tags.size())
+							? safe_id(tags[f])
+							: ("group" + std::to_string(group_index) + "_" + std::to_string(f));
+					printf("[debug] %s decoded rgb_max=%.4f alpha_max=%.4f\n", tag_id.c_str(), rmax, amax);
+					save_image(cfg.debug_dir + "/decode_" + tag_id + ".png", im);
+				}
+				if (cfg.verbose) {
+					printf("[layerdiff] decode %d/%d\r", f + 1, F);
+					fflush(stdout);
+				}
+			} // fb
+		}
+		if (cfg.verbose) {
+			printf("\n");
+		}
+		for (auto &kv : graphs) {
+			ggml_gallocr_free(kv.second.alloc);
+			ggml_free(kv.second.ctx);
+		}
+		pipe_backend_release(backend);
+		mv.ctx_g = nullptr;
+	}
+	return true;
 }
 
 // ---------------------------------------------------------------------------
 // stage 3: Marigold depth
 // ---------------------------------------------------------------------------
 
-bool marigold_depth(const PipelineConfig & cfg, const std::vector<Image> & layers_argb,
-                    std::vector<Image> & depths_out) {
-    const int F = (int) layers_argb.size();
-    const int RES = cfg.depth_res, ZR = RES / 8;
-    const float SCALE = 0.18215f;
-    const size_t DZ = (size_t) ZR * ZR * 4, D = DZ * F;
+bool marigold_depth(const PipelineConfig &cfg, const std::vector<Image> &layers_argb,
+		std::vector<Image> &depths_out) {
+	const int F = (int)layers_argb.size();
+	const int RES = cfg.depth_res, ZR = RES / 8;
+	const float SCALE = 0.18215f;
+	const size_t DZ = (size_t)ZR * ZR * 4, D = DZ * F;
 
-    // cond latents: page (last) + per-layer, pad_rgb bleed then VAE encode
-    std::vector<float> cond((size_t) F * 2 * DZ);
-    {
-        Model mv;
-        std::string p = cfg.model_dir + "/marigold-vae.gguf";
-        if (!pipe_load(cfg, mv, p)) { fprintf(stderr, "failed to load %s\n", p.c_str()); return false; }
+	// cond latents: page (last) + per-layer, pad_rgb bleed then VAE encode
+	std::vector<float> cond((size_t)F * 2 * DZ);
+	{
+		Model mv;
+		std::string p = cfg.model_dir + "/marigold-vae.gguf";
+		if (!pipe_load(cfg, mv, p)) {
+			fprintf(stderr, "failed to load %s\n", p.c_str());
+			return false;
+		}
 
-        // One fixed-shape encode graph, reused for all F+1 images (page +
-        // per-layer): the old per-image run_graph_dev pattern rebuilt and
-        // re-allocated the full tiled-encoder graph 21 times per run (MADR
-        // 0010 candidate 4). NOTE this is graph REUSE with per-image input
-        // re-set, the same proven pattern as the UNet step loops -- not the
-        // earlier reverted attempt that BATCHED multiple images into one
-        // graph and corrupted depth output (see git history).
-        size_t enc_nodes = 294912;
-        size_t enc_meta = ggml_tensor_overhead() * enc_nodes + ggml_graph_overhead_custom(enc_nodes, false);
-        ggml_init_params enc_ip = { enc_meta, nullptr, true };
-        mv.ctx_g = ggml_init(enc_ip);
-        ggml_tensor * x = ggml_new_tensor_4d(mv.ctx_g, GGML_TYPE_F32, RES, RES, 3, 1);
-        ggml_set_input(x);
-        ggml_tensor * enc_out = ggml_scale(mv.ctx_g, vae_encode_tiled(mv, x), SCALE);
-        ggml_set_output(enc_out);
-        ggml_backend_t backend = pipe_backend(cfg);
-        ggml_cgraph * gf = ggml_new_graph_custom(mv.ctx_g, enc_nodes, false);
-        ggml_build_forward_expand(gf, enc_out);
-        ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-        if (!ggml_gallocr_alloc_graph(alloc, gf)) { fprintf(stderr, "marigold encode alloc failed\n"); return false; }
+		// One fixed-shape encode graph, reused for all F+1 images (page +
+		// per-layer): the old per-image run_graph_dev pattern rebuilt and
+		// re-allocated the full tiled-encoder graph 21 times per run (MADR
+		// 0010 candidate 4). NOTE this is graph REUSE with per-image input
+		// re-set, the same proven pattern as the UNet step loops -- not the
+		// earlier reverted attempt that BATCHED multiple images into one
+		// graph and corrupted depth output (see git history).
+		size_t enc_nodes = 294912;
+		size_t enc_meta = ggml_tensor_overhead() * enc_nodes + ggml_graph_overhead_custom(enc_nodes, false);
+		ggml_init_params enc_ip = { enc_meta, nullptr, true };
+		mv.ctx_g = ggml_init(enc_ip);
+		ggml_tensor *x = ggml_new_tensor_4d(mv.ctx_g, GGML_TYPE_F32, RES, RES, 3, 1);
+		ggml_set_input(x);
+		ggml_tensor *enc_out = ggml_scale(mv.ctx_g, vae_encode_tiled(mv, x), SCALE);
+		ggml_set_output(enc_out);
+		ggml_backend_t backend = pipe_backend(cfg);
+		ggml_cgraph *gf = ggml_new_graph_custom(mv.ctx_g, enc_nodes, false);
+		ggml_build_forward_expand(gf, enc_out);
+		ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+		if (!ggml_gallocr_alloc_graph(alloc, gf)) {
+			fprintf(stderr, "marigold encode alloc failed\n");
+			return false;
+		}
 
-        auto encode_one = [&](const Image & argb, std::vector<float> & out_lat) -> bool {
-            Image im = argb;
-            if (im.w != RES || im.h != RES) im = smart_resize(im, RES, RES);
-            Image rgb = pad_rgb(im);
-            std::vector<float> feed((size_t) RES * RES * 3);
-            for (size_t i = 0; i < (size_t) RES * RES; i++) {
-                for (int c = 0; c < 3; c++) {
-                    feed[(size_t) c * RES * RES + i] = rgb.data[i * 3 + c] * 2.0f - 1.0f;
-                }
-            }
-            ggml_backend_tensor_set(x, feed.data(), 0, feed.size() * 4);
-            if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) return false;
-            out_lat.resize(ggml_nelements(enc_out));
-            ggml_backend_tensor_get(enc_out, out_lat.data(), 0, out_lat.size() * 4);
-            return true;
-        };
+		auto encode_one = [&](const Image &argb, std::vector<float> &out_lat) -> bool {
+			Image im = argb;
+			if (im.w != RES || im.h != RES) {
+				im = smart_resize(im, RES, RES);
+			}
+			Image rgb = pad_rgb(im);
+			std::vector<float> feed((size_t)RES * RES * 3);
+			for (size_t i = 0; i < (size_t)RES * RES; i++) {
+				for (int c = 0; c < 3; c++) {
+					feed[(size_t)c * RES * RES + i] = rgb.data[i * 3 + c] * 2.0f - 1.0f;
+				}
+			}
+			ggml_backend_tensor_set(x, feed.data(), 0, feed.size() * 4);
+			if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+				return false;
+			}
+			out_lat.resize(ggml_nelements(enc_out));
+			ggml_backend_tensor_get(enc_out, out_lat.data(), 0, out_lat.size() * 4);
+			return true;
+		};
 
-        std::vector<float> page_lat;
-        if (!encode_one(layers_argb.back(), page_lat)) return false;
-        for (int f = 0; f < F; f++) {
-            std::vector<float> ll;
-            if (!encode_one(layers_argb[f], ll)) return false;
-            std::copy(page_lat.begin(), page_lat.end(), cond.begin() + (size_t) f * 2 * DZ);
-            std::copy(ll.begin(), ll.end(), cond.begin() + (size_t) f * 2 * DZ + DZ);
-            if (cfg.verbose) { printf("[marigold] cond %d/%d\r", f + 1, F); fflush(stdout); }
-        }
-        if (cfg.verbose) printf("\n");
-        ggml_gallocr_free(alloc);
-        pipe_backend_release(backend);
-        ggml_free(mv.ctx_g);
-        mv.ctx_g = nullptr;
-    }
+		std::vector<float> page_lat;
+		if (!encode_one(layers_argb.back(), page_lat)) {
+			return false;
+		}
+		for (int f = 0; f < F; f++) {
+			std::vector<float> ll;
+			if (!encode_one(layers_argb[f], ll)) {
+				return false;
+			}
+			std::copy(page_lat.begin(), page_lat.end(), cond.begin() + (size_t)f * 2 * DZ);
+			std::copy(ll.begin(), ll.end(), cond.begin() + (size_t)f * 2 * DZ + DZ);
+			if (cfg.verbose) {
+				printf("[marigold] cond %d/%d\r", f + 1, F);
+				fflush(stdout);
+			}
+		}
+		if (cfg.verbose) {
+			printf("\n");
+		}
+		ggml_gallocr_free(alloc);
+		pipe_backend_release(backend);
+		ggml_free(mv.ctx_g);
+		mv.ctx_g = nullptr;
+	}
 
-    // empty-prompt embedding from marigold-te
-    std::vector<float> ehs;
-    {
-        Model m;
-        std::string p = cfg.model_dir + "/marigold-te.gguf";
-        if (!pipe_load(cfg, m, p)) { fprintf(stderr, "failed to load %s\n", p.c_str()); return false; }
-        ClipTokenizer tok;
-        if (!tok.load(kv_by_suffix(m, ".vocab_json"), kv_by_suffix(m, ".merges_txt"))) return false;
-        ClipParams p2 = clip_params_from_config(kv_by_suffix(m, ".config_json"));
-        std::vector<int32_t> ids = { tok.bos_id, tok.eos_id };
-        ggml_tensor * ids_t = nullptr;
-        std::vector<std::vector<float>> outs;
-        bool ok = run_graph_dev(cfg, m, 24576,
-            [&]() {
+	// empty-prompt embedding from marigold-te
+	std::vector<float> ehs;
+	{
+		Model m;
+		std::string p = cfg.model_dir + "/marigold-te.gguf";
+		if (!pipe_load(cfg, m, p)) {
+			fprintf(stderr, "failed to load %s\n", p.c_str());
+			return false;
+		}
+		ClipTokenizer tok;
+		if (!tok.load(kv_by_suffix(m, ".vocab_json"), kv_by_suffix(m, ".merges_txt"))) {
+			return false;
+		}
+		ClipParams p2 = clip_params_from_config(kv_by_suffix(m, ".config_json"));
+		std::vector<int32_t> ids = { tok.bos_id, tok.eos_id };
+		ggml_tensor *ids_t = nullptr;
+		std::vector<std::vector<float>> outs;
+		bool ok = run_graph_dev(cfg, m, 24576, [&]() {
                 ids_t = ggml_new_tensor_1d(m.ctx_g, GGML_TYPE_I32, 2);
                 ggml_set_input(ids_t);
                 ggml_tensor * final_out = nullptr;
                 clip_text_graph(m, ids_t, p2, nullptr, &final_out);
-                return std::vector<ggml_tensor *>{ final_out };
-            },
-            [&]() { ggml_backend_tensor_set(ids_t, ids.data(), 0, 2 * 4); },
-            outs);
-        if (!ok) return false;
-        ehs = std::move(outs[0]);                 // (1024, 2)
-    }
+                return std::vector<ggml_tensor *>{ final_out }; }, [&]() { ggml_backend_tensor_set(ids_t, ids.data(), 0, 2 * 4); }, outs);
+		if (!ok) {
+			return false;
+		}
+		ehs = std::move(outs[0]); // (1024, 2)
+	}
 
-    // DDIM loop
-    std::mt19937_64 rng(cfg.seed * 31 + 7);
-    std::normal_distribution<float> nrm(0.0f, 1.0f);
-    std::vector<float> lat(D);
-    for (float & v : lat) v = nrm(rng);
+	// DDIM loop
+	std::mt19937_64 rng(cfg.seed * 31 + 7);
+	std::normal_distribution<float> nrm(0.0f, 1.0f);
+	std::vector<float> lat(D);
+	for (float &v : lat) {
+		v = nrm(rng);
+	}
 
-    DdimTrailing sch;
-    sch.set_timesteps(cfg.depth_steps);
+	DdimTrailing sch;
+	sch.set_timesteps(cfg.depth_steps);
 
-    {
-        Model m;
-        std::string p = cfg.model_dir + "/marigold-unet.gguf";
-        if (!pipe_load(cfg, m, p, true)) { fprintf(stderr, "failed to load %s\n", p.c_str()); return false; }
-        size_t max_nodes = 294912;
-        size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
-        ggml_init_params ip = { meta, nullptr, true };
-        m.ctx_g = ggml_init(ip);
-        ggml_context * ctx = m.ctx_g;
+	{
+		Model m;
+		std::string p = cfg.model_dir + "/marigold-unet.gguf";
+		if (!pipe_load(cfg, m, p, true)) {
+			fprintf(stderr, "failed to load %s\n", p.c_str());
+			return false;
+		}
+		size_t max_nodes = 294912;
+		size_t meta = ggml_tensor_overhead() * max_nodes + ggml_graph_overhead_custom(max_nodes, false);
+		ggml_init_params ip = { meta, nullptr, true };
+		m.ctx_g = ggml_init(ip);
+		ggml_context *ctx = m.ctx_g;
 
-        ggml_tensor * sample = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, ZR, ZR, 12, F);
-        ggml_tensor * ehs_t  = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1024, 2, F);
-        ggml_tensor * ts     = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, F);
-        for (ggml_tensor * t : { sample, ehs_t, ts }) ggml_set_input(t);
-        ggml_tensor * emb = time_embed_mlp(m, ggml_timestep_embedding(ctx, ts, 320, 10000),
-                                           "time_embedding");
-        ggml_tensor * out = unet_frame_forward(m, sample, emb, ehs_t);
-        ggml_set_output(out);
+		ggml_tensor *sample = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, ZR, ZR, 12, F);
+		ggml_tensor *ehs_t = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1024, 2, F);
+		ggml_tensor *ts = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, F);
+		for (ggml_tensor *t : { sample, ehs_t, ts }) {
+			ggml_set_input(t);
+		}
+		ggml_tensor *emb = time_embed_mlp(m, ggml_timestep_embedding(ctx, ts, 320, 10000),
+				"time_embedding");
+		ggml_tensor *out = unet_frame_forward(m, sample, emb, ehs_t);
+		ggml_set_output(out);
 
-        ggml_backend_t backend = pipe_backend(cfg);
-        ggml_cgraph * gf = ggml_new_graph_custom(ctx, max_nodes, false);
-        ggml_build_forward_expand(gf, out);
-        ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-        if (!ggml_gallocr_alloc_graph(alloc, gf)) return false;
-        std::vector<double> step_times;
+		ggml_backend_t backend = pipe_backend(cfg);
+		ggml_cgraph *gf = ggml_new_graph_custom(ctx, max_nodes, false);
+		ggml_build_forward_expand(gf, out);
+		ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+		if (!ggml_gallocr_alloc_graph(alloc, gf)) {
+			return false;
+		}
+		std::vector<double> step_times;
 
-        std::vector<float> ehs_f((size_t) 1024 * 2 * F), eps(D), input((size_t) ZR * ZR * 12 * F);
-        for (int f = 0; f < F; f++) {
-            std::copy(ehs.begin(), ehs.end(), ehs_f.begin() + (size_t) f * 2048);
-        }
-        for (int s = 0; s < cfg.depth_steps; s++) {
-            for (int f = 0; f < F; f++) {
-                std::copy(cond.begin() + (size_t) f * 2 * DZ, cond.begin() + (size_t) (f + 1) * 2 * DZ,
-                          input.begin() + (size_t) f * 3 * DZ);
-                std::copy(lat.begin() + f * DZ, lat.begin() + (f + 1) * DZ,
-                          input.begin() + (size_t) f * 3 * DZ + 2 * DZ);
-            }
-            ggml_backend_tensor_set(ehs_t, ehs_f.data(), 0, ehs_f.size() * 4);
-            ggml_backend_tensor_set(sample, input.data(), 0, input.size() * 4);
-            std::vector<float> tstep(F, (float) sch.timesteps[s]);
-            ggml_backend_tensor_set(ts, tstep.data(), 0, F * 4);
-            const double st0 = now_s();
-            if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) return false;
-            ggml_backend_tensor_get(out, eps.data(), 0, D * 4);
-            step_times.push_back(now_s() - st0);
-            sch.step(lat, eps, s);
-            if (cfg.verbose) { printf("[marigold] step %d/%d\r", s + 1, cfg.depth_steps); fflush(stdout); }
-        }
-        if (cfg.verbose) printf("\n");
-        {
-            double tot = 0; for (double v : step_times) tot += v;
-            fprintf(stderr, "[perf] marigold unet loop: %.1fs total, first=%.2fs, rest_avg=%.2fs (%zu steps)\n",
-                    tot, step_times.empty() ? 0.0 : step_times[0],
-                    step_times.size() > 1 ? (tot - step_times[0]) / (step_times.size() - 1) : 0.0,
-                    step_times.size());
-        }
-        ggml_gallocr_free(alloc);
-        pipe_backend_release(backend);
-        ggml_free(ctx);
-        m.ctx_g = nullptr;
-    }
+		std::vector<float> ehs_f((size_t)1024 * 2 * F), eps(D), input((size_t)ZR * ZR * 12 * F);
+		for (int f = 0; f < F; f++) {
+			std::copy(ehs.begin(), ehs.end(), ehs_f.begin() + (size_t)f * 2048);
+		}
+		for (int s = 0; s < cfg.depth_steps; s++) {
+			for (int f = 0; f < F; f++) {
+				std::copy(cond.begin() + (size_t)f * 2 * DZ, cond.begin() + (size_t)(f + 1) * 2 * DZ,
+						input.begin() + (size_t)f * 3 * DZ);
+				std::copy(lat.begin() + f * DZ, lat.begin() + (f + 1) * DZ,
+						input.begin() + (size_t)f * 3 * DZ + 2 * DZ);
+			}
+			ggml_backend_tensor_set(ehs_t, ehs_f.data(), 0, ehs_f.size() * 4);
+			ggml_backend_tensor_set(sample, input.data(), 0, input.size() * 4);
+			std::vector<float> tstep(F, (float)sch.timesteps[s]);
+			ggml_backend_tensor_set(ts, tstep.data(), 0, F * 4);
+			const double st0 = now_s();
+			if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+				return false;
+			}
+			ggml_backend_tensor_get(out, eps.data(), 0, D * 4);
+			step_times.push_back(now_s() - st0);
+			sch.step(lat, eps, s);
+			if (cfg.verbose) {
+				printf("[marigold] step %d/%d\r", s + 1, cfg.depth_steps);
+				fflush(stdout);
+			}
+		}
+		if (cfg.verbose) {
+			printf("\n");
+		}
+		{
+			double tot = 0;
+			for (double v : step_times) {
+				tot += v;
+			}
+			fprintf(stderr, "[perf] marigold unet loop: %.1fs total, first=%.2fs, rest_avg=%.2fs (%zu steps)\n",
+					tot, step_times.empty() ? 0.0 : step_times[0],
+					step_times.size() > 1 ? (tot - step_times[0]) / (step_times.size() - 1) : 0.0,
+					step_times.size());
+		}
+		ggml_gallocr_free(alloc);
+		pipe_backend_release(backend);
+		ggml_free(ctx);
+		m.ctx_g = nullptr;
+	}
 
-    // decode -> RGB mean -> [0,1]
-    {
-        Model mv;
-        std::string p = cfg.model_dir + "/marigold-vae.gguf";
-        if (!pipe_load(cfg, mv, p)) return false;
-        if (pipe_gpu(cfg)) mv.conv_row_chunk = true;   // decode stage only; Lean-witness-validated exact for all shapes
-        depths_out.assign(F, Image{});
-        // Same graph-reuse pattern as the cond-encode loop above: one build/
-        // alloc, F computes.
-        size_t dec_nodes = 24576;
-        size_t dec_meta = ggml_tensor_overhead() * dec_nodes + ggml_graph_overhead_custom(dec_nodes, false);
-        ggml_init_params dec_ip = { dec_meta, nullptr, true };
-        mv.ctx_g = ggml_init(dec_ip);
-        ggml_tensor * zt = ggml_new_tensor_4d(mv.ctx_g, GGML_TYPE_F32, ZR, ZR, 4, 1);
-        ggml_set_input(zt);
-        ggml_tensor * dec_out = vae_decode(mv, zt);
-        ggml_set_output(dec_out);
-        ggml_backend_t backend = pipe_backend(cfg);
-        ggml_cgraph * gf = ggml_new_graph_custom(mv.ctx_g, dec_nodes, false);
-        ggml_build_forward_expand(gf, dec_out);
-        ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-        if (!ggml_gallocr_alloc_graph(alloc, gf)) { fprintf(stderr, "marigold decode alloc failed\n"); return false; }
-        std::vector<std::vector<float>> outs(1);
-        outs[0].resize(ggml_nelements(dec_out));
-        for (int f = 0; f < F; f++) {
-            std::vector<float> z(DZ);
-            for (size_t i = 0; i < DZ; i++) z[i] = lat[f * DZ + i] / SCALE;
-            ggml_backend_tensor_set(zt, z.data(), 0, z.size() * 4);
-            bool ok = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
-            if (ok) ggml_backend_tensor_get(dec_out, outs[0].data(), 0, outs[0].size() * 4);
-            if (!ok) return false;
-            Image & d = depths_out[f];
-            d.w = d.h = RES; d.c = 1;
-            d.data.resize((size_t) RES * RES);
-            const size_t P = (size_t) RES * RES;
-            for (size_t i = 0; i < P; i++) {
-                float v = (outs[0][i] + outs[0][P + i] + outs[0][2 * P + i]) / 3.0f;
-                v = v < -1.0f ? -1.0f : v > 1.0f ? 1.0f : v;
-                d.data[i] = (v + 1.0f) / 2.0f;
-            }
-            if (cfg.verbose) { printf("[marigold] decode %d/%d\r", f + 1, F); fflush(stdout); }
-        }
-        if (cfg.verbose) printf("\n");
-        ggml_gallocr_free(alloc);
-        pipe_backend_release(backend);
-        ggml_free(mv.ctx_g);
-        mv.ctx_g = nullptr;
-    }
-    return true;
+	// decode -> RGB mean -> [0,1]
+	{
+		Model mv;
+		std::string p = cfg.model_dir + "/marigold-vae.gguf";
+		if (!pipe_load(cfg, mv, p)) {
+			return false;
+		}
+		if (pipe_gpu(cfg)) {
+			mv.conv_row_chunk = true; // decode stage only; Lean-witness-validated exact for all shapes
+		}
+		depths_out.assign(F, Image{});
+		// Same graph-reuse pattern as the cond-encode loop above: one build/
+		// alloc, F computes.
+		size_t dec_nodes = 24576;
+		size_t dec_meta = ggml_tensor_overhead() * dec_nodes + ggml_graph_overhead_custom(dec_nodes, false);
+		ggml_init_params dec_ip = { dec_meta, nullptr, true };
+		mv.ctx_g = ggml_init(dec_ip);
+		ggml_tensor *zt = ggml_new_tensor_4d(mv.ctx_g, GGML_TYPE_F32, ZR, ZR, 4, 1);
+		ggml_set_input(zt);
+		ggml_tensor *dec_out = vae_decode(mv, zt);
+		ggml_set_output(dec_out);
+		ggml_backend_t backend = pipe_backend(cfg);
+		ggml_cgraph *gf = ggml_new_graph_custom(mv.ctx_g, dec_nodes, false);
+		ggml_build_forward_expand(gf, dec_out);
+		ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+		if (!ggml_gallocr_alloc_graph(alloc, gf)) {
+			fprintf(stderr, "marigold decode alloc failed\n");
+			return false;
+		}
+		std::vector<std::vector<float>> outs(1);
+		outs[0].resize(ggml_nelements(dec_out));
+		for (int f = 0; f < F; f++) {
+			std::vector<float> z(DZ);
+			for (size_t i = 0; i < DZ; i++) {
+				z[i] = lat[f * DZ + i] / SCALE;
+			}
+			ggml_backend_tensor_set(zt, z.data(), 0, z.size() * 4);
+			bool ok = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
+			if (ok) {
+				ggml_backend_tensor_get(dec_out, outs[0].data(), 0, outs[0].size() * 4);
+			}
+			if (!ok) {
+				return false;
+			}
+			Image &d = depths_out[f];
+			d.w = d.h = RES;
+			d.c = 1;
+			d.data.resize((size_t)RES * RES);
+			const size_t P = (size_t)RES * RES;
+			for (size_t i = 0; i < P; i++) {
+				float v = (outs[0][i] + outs[0][P + i] + outs[0][2 * P + i]) / 3.0f;
+				v = v < -1.0f ? -1.0f : v > 1.0f ? 1.0f
+												 : v;
+				d.data[i] = (v + 1.0f) / 2.0f;
+			}
+			if (cfg.verbose) {
+				printf("[marigold] decode %d/%d\r", f + 1, F);
+				fflush(stdout);
+			}
+		}
+		if (cfg.verbose) {
+			printf("\n");
+		}
+		ggml_gallocr_free(alloc);
+		pipe_backend_release(backend);
+		ggml_free(mv.ctx_g);
+		mv.ctx_g = nullptr;
+	}
+	return true;
 }
 
 // ---------------------------------------------------------------------------
 // LaMa callback
 // ---------------------------------------------------------------------------
 
-InpaintFn make_lama_inpaint(const PipelineConfig & cfg_in) {
-    auto model = std::make_shared<Model>();
-    PipelineConfig cfg = cfg_in;
-    std::string path = cfg.model_dir + "/lama.gguf";
-    return [model, cfg, path](const Image & rgb, const std::vector<uint8_t> & mask) -> Image {
-        if (model->weights.empty()) {
-            if (!pipe_load(cfg, *model, path)) {
-                fprintf(stderr, "failed to load %s - skipping inpaint\n", path.c_str());
-                return rgb;
-            }
-            lama_prepare_gpu_weights(*model);   // one-time: see lama.h
-        }
-        // upstream inpaint_preprocess: resize <=1024 stride 64, square pad
-        int W = rgb.w, H = rgb.h;
-        int side = std::max(W, H);
-        int target = side > 1024 ? 1024 : (side + 63) / 64 * 64;
-        Image img = rgb;
-        Image m4;
-        m4.w = W; m4.h = H; m4.c = 1;
-        m4.data.resize(mask.size());
-        for (size_t i = 0; i < mask.size(); i++) m4.data[i] = mask[i] / 255.0f;
-        img = smart_resize(img, target, target);
-        m4 = smart_resize(m4, target, target);
-        for (float & v : m4.data) v = v < 0.5f ? 0.0f : 1.0f;
+InpaintFn make_lama_inpaint(const PipelineConfig &cfg_in) {
+	auto model = std::make_shared<Model>();
+	PipelineConfig cfg = cfg_in;
+	std::string path = cfg.model_dir + "/lama.gguf";
+	return [model, cfg, path](const Image &rgb, const std::vector<uint8_t> &mask) -> Image {
+		if (model->weights.empty()) {
+			if (!pipe_load(cfg, *model, path)) {
+				fprintf(stderr, "failed to load %s - skipping inpaint\n", path.c_str());
+				return rgb;
+			}
+			lama_prepare_gpu_weights(*model); // one-time: see lama.h
+		}
+		// upstream inpaint_preprocess: resize <=1024 stride 64, square pad
+		int W = rgb.w, H = rgb.h;
+		int side = std::max(W, H);
+		int target = side > 1024 ? 1024 : (side + 63) / 64 * 64;
+		Image img = rgb;
+		Image m4;
+		m4.w = W;
+		m4.h = H;
+		m4.c = 1;
+		m4.data.resize(mask.size());
+		for (size_t i = 0; i < mask.size(); i++) {
+			m4.data[i] = mask[i] / 255.0f;
+		}
+		img = smart_resize(img, target, target);
+		m4 = smart_resize(m4, target, target);
+		for (float &v : m4.data) {
+			v = v < 0.5f ? 0.0f : 1.0f;
+		}
 
-        ggml_tensor * xi = nullptr, * xm = nullptr;
-        LamaExtraInputs extra;
-        std::vector<std::vector<float>> outs;
-        std::vector<float> feed((size_t) target * target * 3), mfeed((size_t) target * target);
-        const size_t P = (size_t) target * target;
-        for (size_t i = 0; i < P; i++) {
-            for (int c = 0; c < 3; c++) feed[(size_t) c * P + i] = img.data[i * 3 + c];
-            mfeed[i] = m4.data[i];
-        }
-        bool ok = run_graph_dev(cfg, *model, 24576,
-            [&]() {
+		ggml_tensor *xi = nullptr, *xm = nullptr;
+		LamaExtraInputs extra;
+		std::vector<std::vector<float>> outs;
+		std::vector<float> feed((size_t)target * target * 3), mfeed((size_t)target * target);
+		const size_t P = (size_t)target * target;
+		for (size_t i = 0; i < P; i++) {
+			for (int c = 0; c < 3; c++) {
+				feed[(size_t)c * P + i] = img.data[i * 3 + c];
+			}
+			mfeed[i] = m4.data[i];
+		}
+		bool ok = run_graph_dev(cfg, *model, 24576, [&]() {
                 xi = ggml_new_tensor_4d(model->ctx_g, GGML_TYPE_F32, target, target, 3, 1);
                 xm = ggml_new_tensor_4d(model->ctx_g, GGML_TYPE_F32, target, target, 1, 1);
                 ggml_set_input(xi);
                 ggml_set_input(xm);
-                return std::vector<ggml_tensor *>{ lama_inpaint_graph(*model, xi, xm, &extra) };
-            },
-            [&]() {
+                return std::vector<ggml_tensor *>{ lama_inpaint_graph(*model, xi, xm, &extra) }; }, [&]() {
                 ggml_backend_tensor_set(xi, feed.data(), 0, feed.size() * 4);
                 ggml_backend_tensor_set(xm, mfeed.data(), 0, mfeed.size() * 4);
-                lama_set_extra_inputs(extra, target);
-            },
-            outs);
-        if (!ok) return rgb;
-        Image res;
-        res.w = res.h = target; res.c = 3;
-        res.data.resize(P * 3);
-        for (size_t i = 0; i < P; i++) {
-            for (int c = 0; c < 3; c++) {
-                float v = std::round(outs[0][(size_t) c * P + i] * 255.0f) / 255.0f;
-                res.data[i * 3 + c] = std::min(1.0f, std::max(0.0f, v));
-            }
-        }
-        if (target != W || target != H) res = smart_resize(res, W, H);
-        // composite only inside the mask
-        Image final_img = rgb;
-        for (size_t i = 0; i < mask.size(); i++) {
-            if (mask[i] >= 127) {
-                for (int c = 0; c < 3; c++) final_img.data[i * 3 + c] = res.data[i * 3 + c];
-            }
-        }
-        return final_img;
-    };
+                lama_set_extra_inputs(extra, target); }, outs);
+		if (!ok) {
+			return rgb;
+		}
+		Image res;
+		res.w = res.h = target;
+		res.c = 3;
+		res.data.resize(P * 3);
+		for (size_t i = 0; i < P; i++) {
+			for (int c = 0; c < 3; c++) {
+				float v = std::round(outs[0][(size_t)c * P + i] * 255.0f) / 255.0f;
+				res.data[i * 3 + c] = std::min(1.0f, std::max(0.0f, v));
+			}
+		}
+		if (target != W || target != H) {
+			res = smart_resize(res, W, H);
+		}
+		// composite only inside the mask
+		Image final_img = rgb;
+		for (size_t i = 0; i < mask.size(); i++) {
+			if (mask[i] >= 127) {
+				for (int c = 0; c < 3; c++) {
+					final_img.data[i * 3 + c] = res.data[i * 3 + c];
+				}
+			}
+		}
+		return final_img;
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -924,35 +1080,44 @@ InpaintFn make_lama_inpaint(const PipelineConfig & cfg_in) {
 // ---------------------------------------------------------------------------
 
 // upstream img_alpha_blending (premultiplied=False): sequential "over"
-static void blend_over(Image & dst, const Image & src) {
-    for (size_t i = 0; i < (size_t) dst.w * dst.h; i++) {
-        float a = src.data[i * 4 + 3];
-        for (int c = 0; c < 3; c++) {
-            dst.data[i * 4 + c] = src.data[i * 4 + c] * a + dst.data[i * 4 + c] * (1 - a);
-        }
-        dst.data[i * 4 + 3] = a + dst.data[i * 4 + 3] * (1 - a);
-    }
+static void blend_over(Image &dst, const Image &src) {
+	for (size_t i = 0; i < (size_t)dst.w * dst.h; i++) {
+		float a = src.data[i * 4 + 3];
+		for (int c = 0; c < 3; c++) {
+			dst.data[i * 4 + c] = src.data[i * 4 + c] * a + dst.data[i * 4 + c] * (1 - a);
+		}
+		dst.data[i * 4 + 3] = a + dst.data[i * 4 + 3] * (1 - a);
+	}
 }
 
-static void alpha_floor(Image & img) {          // upstream: alpha < 15/255 -> 0
-    for (size_t i = 3; i < img.data.size(); i += 4) {
-        if (img.data[i] < 15.0f / 255.0f) { img.data[i] = 0.0f; }
-    }
+static void alpha_floor(Image &img) { // upstream: alpha < 15/255 -> 0
+	for (size_t i = 3; i < img.data.size(); i += 4) {
+		if (img.data[i] < 15.0f / 255.0f) {
+			img.data[i] = 0.0f;
+		}
+	}
 }
 
-static bool bbox_alpha(const Image & img, float thr, int * x, int * y, int * w, int * h) {
-    int x0 = img.w, y0 = img.h, x1 = -1, y1 = -1;
-    for (int yy = 0; yy < img.h; yy++) {
-        for (int xx = 0; xx < img.w; xx++) {
-            if (img.px(xx, yy)[3] > thr) {
-                x0 = std::min(x0, xx); y0 = std::min(y0, yy);
-                x1 = std::max(x1, xx); y1 = std::max(y1, yy);
-            }
-        }
-    }
-    if (x1 < 0) { return false; }
-    *x = x0; *y = y0; *w = x1 - x0 + 1; *h = y1 - y0 + 1;
-    return true;
+static bool bbox_alpha(const Image &img, float thr, int *x, int *y, int *w, int *h) {
+	int x0 = img.w, y0 = img.h, x1 = -1, y1 = -1;
+	for (int yy = 0; yy < img.h; yy++) {
+		for (int xx = 0; xx < img.w; xx++) {
+			if (img.px(xx, yy)[3] > thr) {
+				x0 = std::min(x0, xx);
+				y0 = std::min(y0, yy);
+				x1 = std::max(x1, xx);
+				y1 = std::max(y1, yy);
+			}
+		}
+	}
+	if (x1 < 0) {
+		return false;
+	}
+	*x = x0;
+	*y = y0;
+	*w = x1 - x0 + 1;
+	*h = y1 - y0 + 1;
+	return true;
 }
 
 // like bbox_alpha, but robust to sparse outlier pixels (e.g. a stray
@@ -965,59 +1130,79 @@ static bool bbox_alpha(const Image & img, float thr, int * x, int * y, int * w, 
 // the real head region was ~15500px vs. a ~46px corner artifact -- no
 // need for anything fancier (e.g. pre-dilating to merge fragments) until
 // a real case actually demonstrates single components aren't enough.
-static bool bbox_alpha_largest_cc(const Image & img, float thr, int * x, int * y, int * w, int * h) {
-    const int W = img.w, H = img.h;
-    std::vector<uint8_t> mask((size_t) W * H, 0);
-    for (int yy = 0; yy < H; yy++) {
-        for (int xx = 0; xx < W; xx++) {
-            if (img.px(xx, yy)[3] > thr) { mask[(size_t) yy * W + xx] = 1; }
-        }
-    }
-    std::vector<int32_t> label((size_t) W * H, -1);
-    int best_x0 = 0, best_y0 = 0, best_x1 = -1, best_y1 = -1;
-    size_t best_size = 0;
-    std::vector<int> stack;
-    for (int yy = 0; yy < H; yy++) {
-        for (int xx = 0; xx < W; xx++) {
-            size_t idx0 = (size_t) yy * W + xx;
-            if (!mask[idx0] || label[idx0] >= 0) { continue; }
-            int cx0 = xx, cy0 = yy, cx1 = xx, cy1 = yy;
-            size_t csize = 0;
-            stack.clear();
-            stack.push_back(xx); stack.push_back(yy);
-            label[idx0] = 1;
-            while (!stack.empty()) {
-                int cy = stack.back(); stack.pop_back();
-                int cx = stack.back(); stack.pop_back();
-                csize++;
-                cx0 = std::min(cx0, cx); cy0 = std::min(cy0, cy);
-                cx1 = std::max(cx1, cx); cy1 = std::max(cy1, cy);
-                static const int ddx[4] = { 1, -1, 0, 0 };
-                static const int ddy[4] = { 0, 0, 1, -1 };
-                for (int d = 0; d < 4; d++) {
-                    int nx = cx + ddx[d], ny = cy + ddy[d];
-                    if (nx < 0 || nx >= W || ny < 0 || ny >= H) { continue; }
-                    size_t nidx = (size_t) ny * W + nx;
-                    if (mask[nidx] && label[nidx] < 0) {
-                        label[nidx] = 1;
-                        stack.push_back(nx); stack.push_back(ny);
-                    }
-                }
-            }
-            if (csize > best_size) {
-                best_size = csize;
-                best_x0 = cx0; best_y0 = cy0; best_x1 = cx1; best_y1 = cy1;
-            }
-        }
-    }
-    if (best_size == 0) { return false; }
-    *x = best_x0; *y = best_y0; *w = best_x1 - best_x0 + 1; *h = best_y1 - best_y0 + 1;
-    return true;
+static bool bbox_alpha_largest_cc(const Image &img, float thr, int *x, int *y, int *w, int *h) {
+	const int W = img.w, H = img.h;
+	std::vector<uint8_t> mask((size_t)W * H, 0);
+	for (int yy = 0; yy < H; yy++) {
+		for (int xx = 0; xx < W; xx++) {
+			if (img.px(xx, yy)[3] > thr) {
+				mask[(size_t)yy * W + xx] = 1;
+			}
+		}
+	}
+	std::vector<int32_t> label((size_t)W * H, -1);
+	int best_x0 = 0, best_y0 = 0, best_x1 = -1, best_y1 = -1;
+	size_t best_size = 0;
+	std::vector<int> stack;
+	for (int yy = 0; yy < H; yy++) {
+		for (int xx = 0; xx < W; xx++) {
+			size_t idx0 = (size_t)yy * W + xx;
+			if (!mask[idx0] || label[idx0] >= 0) {
+				continue;
+			}
+			int cx0 = xx, cy0 = yy, cx1 = xx, cy1 = yy;
+			size_t csize = 0;
+			stack.clear();
+			stack.push_back(xx);
+			stack.push_back(yy);
+			label[idx0] = 1;
+			while (!stack.empty()) {
+				int cy = stack.back();
+				stack.pop_back();
+				int cx = stack.back();
+				stack.pop_back();
+				csize++;
+				cx0 = std::min(cx0, cx);
+				cy0 = std::min(cy0, cy);
+				cx1 = std::max(cx1, cx);
+				cy1 = std::max(cy1, cy);
+				static const int ddx[4] = { 1, -1, 0, 0 };
+				static const int ddy[4] = { 0, 0, 1, -1 };
+				for (int d = 0; d < 4; d++) {
+					int nx = cx + ddx[d], ny = cy + ddy[d];
+					if (nx < 0 || nx >= W || ny < 0 || ny >= H) {
+						continue;
+					}
+					size_t nidx = (size_t)ny * W + nx;
+					if (mask[nidx] && label[nidx] < 0) {
+						label[nidx] = 1;
+						stack.push_back(nx);
+						stack.push_back(ny);
+					}
+				}
+			}
+			if (csize > best_size) {
+				best_size = csize;
+				best_x0 = cx0;
+				best_y0 = cy0;
+				best_x1 = cx1;
+				best_y1 = cy1;
+			}
+		}
+	}
+	if (best_size == 0) {
+		return false;
+	}
+	*x = best_x0;
+	*y = best_y0;
+	*w = best_x1 - best_x0 + 1;
+	*h = best_y1 - best_y0 + 1;
+	return true;
 }
 
 static uint64_t now_unix_nano() {
-    using namespace std::chrono;
-    return (uint64_t) duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
+	using namespace std::chrono;
+	return (uint64_t)duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
 }
 
 // RAII span: starts timing at construction, emits a completed Span into
@@ -1027,482 +1212,595 @@ static uint64_t now_unix_nano() {
 // Wrap a stage's code in `{ SpanScope s(...); ...stage...; }`.
 class SpanScope {
 public:
-    SpanScope(SeeThroughResult & result, std::string trace_id, std::string parent_id, std::string name,
-              bool verbose, const std::string & spans_path = {},
-              std::vector<std::pair<std::string, std::string>> attrs = {})
-        : result_(result), trace_id_(std::move(trace_id)), parent_id_(std::move(parent_id)),
-          name_(std::move(name)), attrs_(std::move(attrs)), verbose_(verbose), spans_path_(spans_path),
-          t0_(now_unix_nano()) {}
-    ~SpanScope() {
-        Span s;
-        s.trace_id = trace_id_;
-        s.span_id = span_id_;
-        s.parent_span_id = parent_id_;
-        s.name = name_;
-        s.start_time_unix_nano = t0_;
-        s.end_time_unix_nano = now_unix_nano();
-        s.status_code = ok ? 1 : 2;   // OK / ERROR
-        s.attributes = attrs_;
-        if (verbose_) { printf("%s\n", span_to_json(s).c_str()); fflush(stdout); }
-        // write+flush now, not batched until the run ends -- see
-        // PipelineConfig::spans_path.
-        if (!spans_path_.empty()) { write_span_jsonl(spans_path_, s); }
-        result_.spans.push_back(std::move(s));
-    }
-    const std::string & span_id() const { return span_id_; }
-    bool ok = true;   // set false before scope exit to mark this span an error
+	SpanScope(SeeThroughResult &result, std::string trace_id, std::string parent_id, std::string name,
+			bool verbose, const std::string &spans_path = {},
+			std::vector<std::pair<std::string, std::string>> attrs = {}) : result_(result),
+																		   trace_id_(std::move(trace_id)),
+																		   parent_id_(std::move(parent_id)),
+																		   name_(std::move(name)),
+																		   attrs_(std::move(attrs)),
+																		   verbose_(verbose),
+																		   spans_path_(spans_path),
+																		   t0_(now_unix_nano()) {}
+	~SpanScope() {
+		Span s;
+		s.trace_id = trace_id_;
+		s.span_id = span_id_;
+		s.parent_span_id = parent_id_;
+		s.name = name_;
+		s.start_time_unix_nano = t0_;
+		s.end_time_unix_nano = now_unix_nano();
+		s.status_code = ok ? 1 : 2; // OK / ERROR
+		s.attributes = attrs_;
+		if (verbose_) {
+			printf("%s\n", span_to_json(s).c_str());
+			fflush(stdout);
+		}
+		// write+flush now, not batched until the run ends -- see
+		// PipelineConfig::spans_path.
+		if (!spans_path_.empty()) {
+			write_span_jsonl(spans_path_, s);
+		}
+		result_.spans.push_back(std::move(s));
+	}
+	const std::string &span_id() const { return span_id_; }
+	bool ok = true; // set false before scope exit to mark this span an error
 private:
-    SeeThroughResult & result_;
-    std::string trace_id_, parent_id_, name_;
-    std::string span_id_ = generate_span_id();
-    std::vector<std::pair<std::string, std::string>> attrs_;
-    bool verbose_;
-    std::string spans_path_;
-    uint64_t t0_;
+	SeeThroughResult &result_;
+	std::string trace_id_, parent_id_, name_;
+	std::string span_id_ = generate_span_id();
+	std::vector<std::pair<std::string, std::string>> attrs_;
+	bool verbose_;
+	std::string spans_path_;
+	uint64_t t0_;
 };
 
-bool run_see_through(const PipelineConfig & cfg, const Image & input, SeeThroughResult & result) {
-    const std::string trace_id = generate_trace_id();
-    // root span: constructed first, destructed last (any return path,
-    // success or failure) -- covers the whole run without a matching
-    // end-of-function block.
-    SpanScope root(result, trace_id, "", "run", cfg.verbose, cfg.spans_path, {
-        { "res", std::to_string(cfg.res) }, { "steps", std::to_string(cfg.steps) },
-        { "depth_res", std::to_string(cfg.depth_res) }, { "depth_steps", std::to_string(cfg.depth_steps) },
-        { "device", cfg.device }, { "seed", std::to_string(cfg.seed) },
-    });
+bool run_see_through(const PipelineConfig &cfg, const Image &input, SeeThroughResult &result) {
+	const std::string trace_id = generate_trace_id();
+	// root span: constructed first, destructed last (any return path,
+	// success or failure) -- covers the whole run without a matching
+	// end-of-function block.
+	SpanScope root(result, trace_id, "", "run", cfg.verbose, cfg.spans_path, {
+																					 { "res", std::to_string(cfg.res) },
+																					 { "steps", std::to_string(cfg.steps) },
+																					 { "depth_res", std::to_string(cfg.depth_res) },
+																					 { "depth_steps", std::to_string(cfg.depth_steps) },
+																					 { "device", cfg.device },
+																					 { "seed", std::to_string(cfg.seed) },
+																			 });
 
-    if (cfg.device == "cpu") {
-        root.ok = false;
-        // Fail before any (multi-GB) model loading happens, not partway
-        // through the first graph compute -- see pipe_backend().
-        fprintf(stderr, "error: --device cpu is not supported -- this build is GPU"
-                        "-only (Vulkan). Run without --device (auto-selects the "
-                        "first GPU) or pass --device vulkan.\n");
-        return false;
-    }
-    const int RES = cfg.res;
-    int pad_w, pad_h, pad_x, pad_y;
-    Image fullpage = center_square_pad_resize(input, RES, 0.0f, &pad_w, &pad_h, &pad_x, &pad_y);
-    const double scale = (double) pad_w / RES;
+	if (cfg.device == "cpu") {
+		root.ok = false;
+		// Fail before any (multi-GB) model loading happens, not partway
+		// through the first graph compute -- see pipe_backend().
+		fprintf(stderr, "error: --device cpu is not supported -- this build is GPU"
+						"-only (Vulkan). Run without --device (auto-selects the "
+						"first GPU) or pass --device vulkan.\n");
+		return false;
+	}
+	const int RES = cfg.res;
+	int pad_w, pad_h, pad_x, pad_y;
+	Image fullpage = center_square_pad_resize(input, RES, 0.0f, &pad_w, &pad_h, &pad_x, &pad_y);
+	const double scale = (double)pad_w / RES;
 
-    // page RGB (alpha treated as 255) + page alpha for masking decoded layers
-    Image page_rgb;
-    page_rgb.w = page_rgb.h = RES; page_rgb.c = 3;
-    page_rgb.data.resize((size_t) RES * RES * 3);
-    std::vector<float> page_alpha((size_t) RES * RES);
-    for (size_t i = 0; i < (size_t) RES * RES; i++) {
-        for (int c = 0; c < 3; c++) { page_rgb.data[i * 3 + c] = fullpage.data[i * 4 + c]; }
-        page_alpha[i] = fullpage.data[i * 4 + 3];
-    }
+	// page RGB (alpha treated as 255) + page alpha for masking decoded layers
+	Image page_rgb;
+	page_rgb.w = page_rgb.h = RES;
+	page_rgb.c = 3;
+	page_rgb.data.resize((size_t)RES * RES * 3);
+	std::vector<float> page_alpha((size_t)RES * RES);
+	for (size_t i = 0; i < (size_t)RES * RES; i++) {
+		for (int c = 0; c < 3; c++) {
+			page_rgb.data[i * 3 + c] = fullpage.data[i * 4 + c];
+		}
+		page_alpha[i] = fullpage.data[i * 4 + 3];
+	}
 
-    if (!cfg.debug_dir.empty()) {
-        Image dbg; dbg.w = dbg.h = RES; dbg.c = 1;
-        dbg.data = page_alpha;
-        std::ofstream f(cfg.debug_dir + "/page_alpha.png", std::ios::binary);
-        std::vector<uint8_t> png = encode_png(dbg);
-        f.write(reinterpret_cast<const char *>(png.data()), (std::streamsize) png.size());
-        int rows_nonzero = 0;
-        for (int y = 0; y < RES; y++) {
-            bool any = false;
-            for (int x = 0; x < RES; x++) {
-                if (page_alpha[(size_t) y * RES + x] > 0.5f) { any = true; break; }
-            }
-            if (any) { rows_nonzero++; }
-        }
-        printf("[debug] page_alpha: %d/%d rows have any nonzero alpha (pad_w=%d pad_h=%d pad_x=%d pad_y=%d)\n",
-               rows_nonzero, RES, pad_w, pad_h, pad_x, pad_y);
-    }
+	if (!cfg.debug_dir.empty()) {
+		Image dbg;
+		dbg.w = dbg.h = RES;
+		dbg.c = 1;
+		dbg.data = page_alpha;
+		std::ofstream f(cfg.debug_dir + "/page_alpha.png", std::ios::binary);
+		std::vector<uint8_t> png = encode_png(dbg);
+		f.write(reinterpret_cast<const char *>(png.data()), (std::streamsize)png.size());
+		int rows_nonzero = 0;
+		for (int y = 0; y < RES; y++) {
+			bool any = false;
+			for (int x = 0; x < RES; x++) {
+				if (page_alpha[(size_t)y * RES + x] > 0.5f) {
+					any = true;
+					break;
+				}
+			}
+			if (any) {
+				rows_nonzero++;
+			}
+		}
+		printf("[debug] page_alpha: %d/%d rows have any nonzero alpha (pad_w=%d pad_h=%d pad_x=%d pad_y=%d)\n",
+				rows_nonzero, RES, pad_w, pad_h, pad_x, pad_y);
+	}
 
-    // ---- layerdiff pass 1: body ----
-    std::vector<float> ehs, pooled;
-    {
-        SpanScope s(result, trace_id, root.span_id(), "clip.body", cfg.verbose, cfg.spans_path);
-        if (!encode_tags(cfg, BODY_TAGS_V3, ehs, pooled)) { s.ok = false; return false; }
-    }
-    std::vector<Image> body_layers;
-    {
-        SpanScope s(result, trace_id, root.span_id(), "layerdiff.body", cfg.verbose, cfg.spans_path);
-        if (!layerdiff_pass(cfg, page_rgb, ehs, pooled, 0, body_layers, BODY_TAGS_V3)) { s.ok = false; return false; }
-    }
+	// ---- layerdiff pass 1: body ----
+	std::vector<float> ehs, pooled;
+	{
+		SpanScope s(result, trace_id, root.span_id(), "clip.body", cfg.verbose, cfg.spans_path);
+		if (!encode_tags(cfg, BODY_TAGS_V3, ehs, pooled)) {
+			s.ok = false;
+			return false;
+		}
+	}
+	std::vector<Image> body_layers;
+	{
+		SpanScope s(result, trace_id, root.span_id(), "layerdiff.body", cfg.verbose, cfg.spans_path);
+		if (!layerdiff_pass(cfg, page_rgb, ehs, pooled, 0, body_layers, BODY_TAGS_V3)) {
+			s.ok = false;
+			return false;
+		}
+	}
 
-    std::vector<float> pre_mul_alpha5;   // snapshot before the page_alpha multiply
-    if (!cfg.debug_dir.empty() && body_layers.size() > 5) {
-        Image & l = body_layers[5];
-        pre_mul_alpha5.resize((size_t) l.w * l.h);
-        for (size_t i = 0; i < pre_mul_alpha5.size(); i++) { pre_mul_alpha5[i] = l.data[i * 4 + 3]; }
-    }
+	std::vector<float> pre_mul_alpha5; // snapshot before the page_alpha multiply
+	if (!cfg.debug_dir.empty() && body_layers.size() > 5) {
+		Image &l = body_layers[5];
+		pre_mul_alpha5.resize((size_t)l.w * l.h);
+		for (size_t i = 0; i < pre_mul_alpha5.size(); i++) {
+			pre_mul_alpha5[i] = l.data[i * 4 + 3];
+		}
+	}
 
-    for (Image & l : body_layers) {
-        for (size_t i = 0; i < page_alpha.size(); i++) { l.data[i * 4 + 3] *= page_alpha[i]; }
-    }
+	for (Image &l : body_layers) {
+		for (size_t i = 0; i < page_alpha.size(); i++) {
+			l.data[i * 4 + 3] *= page_alpha[i];
+		}
+	}
 
-    if (!cfg.debug_dir.empty() && body_layers.size() > 5) {
-        Image & l = body_layers[5];   // topwear, pre-alpha_floor
-        printf("[debug] body_layers[5] (topwear), w=%d h=%d, page_alpha.size=%zu\n",
-               l.w, l.h, page_alpha.size());
-        for (int y = 0; y < l.h; y += (l.h / 20 > 0 ? l.h / 20 : 1)) {
-            float pre_max = 0, pa_max = 0, post_max = 0;
-            for (int x = 0; x < l.w; x++) {
-                size_t i = (size_t) y * l.w + x;
-                pre_max = std::max(pre_max, pre_mul_alpha5[i]);
-                pa_max = std::max(pa_max, page_alpha[i]);
-                post_max = std::max(post_max, l.px(x, y)[3]);
-            }
-            printf("[debug]   row %4d: pre_alpha=%.4f page_alpha=%.4f post_alpha=%.4f\n",
-                   y, pre_max, pa_max, post_max);
-        }
-    }
+	if (!cfg.debug_dir.empty() && body_layers.size() > 5) {
+		Image &l = body_layers[5]; // topwear, pre-alpha_floor
+		printf("[debug] body_layers[5] (topwear), w=%d h=%d, page_alpha.size=%zu\n",
+				l.w, l.h, page_alpha.size());
+		for (int y = 0; y < l.h; y += (l.h / 20 > 0 ? l.h / 20 : 1)) {
+			float pre_max = 0, pa_max = 0, post_max = 0;
+			for (int x = 0; x < l.w; x++) {
+				size_t i = (size_t)y * l.w + x;
+				pre_max = std::max(pre_max, pre_mul_alpha5[i]);
+				pa_max = std::max(pa_max, page_alpha[i]);
+				post_max = std::max(post_max, l.px(x, y)[3]);
+			}
+			printf("[debug]   row %4d: pre_alpha=%.4f page_alpha=%.4f post_alpha=%.4f\n",
+					y, pre_max, pa_max, post_max);
+		}
+	}
 
-    // ---- head crop + pass 2 ----
-    std::map<std::string, Image> v3_layers;
-    for (size_t i = 0; i < BODY_TAGS_V3.size(); i++) { v3_layers[BODY_TAGS_V3[i]] = body_layers[i]; }
+	// ---- head crop + pass 2 ----
+	std::map<std::string, Image> v3_layers;
+	for (size_t i = 0; i < BODY_TAGS_V3.size(); i++) {
+		v3_layers[BODY_TAGS_V3[i]] = body_layers[i];
+	}
 
-    {
-        const Image & head = body_layers[2];
-        int hx0, hy0, hw, hh;
-        if (!bbox_alpha_largest_cc(head, 15.0f / 255.0f, &hx0, &hy0, &hw, &hh)) {
-            fprintf(stderr, "no head region found — skipping head pass\n");
-        } else {
-            // map to original-image coords (upstream apply_layerdiff v3)
-            int hx = (int) (hx0 * scale) - pad_x;
-            int hy = (int) (hy0 * scale) - pad_y;
-            hw = (int) (hw * scale);
-            hh = (int) (hh * scale);
-            int iw = input.w, ih = input.h;
-            int x1 = hx, y1 = hy, x2 = hx + hw, y2 = hy + hh;
-            if (hw < iw / 2) {
-                int px = std::min(std::min(iw - hx - hw, hx), hw / 5);
-                x1 = std::min(std::max(hx - px, 0), iw);
-                x2 = std::min(std::max(hx + hw + px, 0), iw);
-            }
-            if (hh < ih / 2) {
-                int py = std::min(std::min(ih - hy - hh, hy), hh / 5);
-                y1 = std::min(std::max(hy - py, 0), ih);
-                y2 = std::min(std::max(hy + hh + py, 0), ih);
-            }
-            int hx1 = (int) (x1 / scale + pad_x / scale);
-            int hy1 = (int) (y1 / scale + pad_y / scale);
+	{
+		const Image &head = body_layers[2];
+		int hx0, hy0, hw, hh;
+		if (!bbox_alpha_largest_cc(head, 15.0f / 255.0f, &hx0, &hy0, &hw, &hh)) {
+			fprintf(stderr, "no head region found — skipping head pass\n");
+		} else {
+			// map to original-image coords (upstream apply_layerdiff v3)
+			int hx = (int)(hx0 * scale) - pad_x;
+			int hy = (int)(hy0 * scale) - pad_y;
+			hw = (int)(hw * scale);
+			hh = (int)(hh * scale);
+			int iw = input.w, ih = input.h;
+			int x1 = hx, y1 = hy, x2 = hx + hw, y2 = hy + hh;
+			if (hw < iw / 2) {
+				int px = std::min(std::min(iw - hx - hw, hx), hw / 5);
+				x1 = std::min(std::max(hx - px, 0), iw);
+				x2 = std::min(std::max(hx + hw + px, 0), iw);
+			}
+			if (hh < ih / 2) {
+				int py = std::min(std::min(ih - hy - hh, hy), hh / 5);
+				y1 = std::min(std::max(hy - py, 0), ih);
+				y2 = std::min(std::max(hy + hh + py, 0), ih);
+			}
+			int hx1 = (int)(x1 / scale + pad_x / scale);
+			int hy1 = (int)(y1 / scale + pad_y / scale);
 
-            Image head_crop;
-            head_crop.w = x2 - x1; head_crop.h = y2 - y1; head_crop.c = 4;
-            head_crop.data.resize((size_t) head_crop.w * head_crop.h * 4);
-            for (int yy = y1; yy < y2; yy++) {
-                std::copy(input.px(x1, yy), input.px(x1, yy) + (size_t) head_crop.w * 4,
-                          head_crop.data.begin() + (size_t) (yy - y1) * head_crop.w * 4);
-            }
-            int hp_w, hp_h, hp_x, hp_y;
-            Image head_page = center_square_pad_resize(head_crop, RES, 0.0f, &hp_w, &hp_h, &hp_x, &hp_y);
+			Image head_crop;
+			head_crop.w = x2 - x1;
+			head_crop.h = y2 - y1;
+			head_crop.c = 4;
+			head_crop.data.resize((size_t)head_crop.w * head_crop.h * 4);
+			for (int yy = y1; yy < y2; yy++) {
+				std::copy(input.px(x1, yy), input.px(x1, yy) + (size_t)head_crop.w * 4,
+						head_crop.data.begin() + (size_t)(yy - y1) * head_crop.w * 4);
+			}
+			int hp_w, hp_h, hp_x, hp_y;
+			Image head_page = center_square_pad_resize(head_crop, RES, 0.0f, &hp_w, &hp_h, &hp_x, &hp_y);
 
-            Image head_rgb;
-            head_rgb.w = head_rgb.h = RES; head_rgb.c = 3;
-            head_rgb.data.resize((size_t) RES * RES * 3);
-            std::vector<float> head_alpha((size_t) RES * RES);
-            for (size_t i = 0; i < (size_t) RES * RES; i++) {
-                for (int c = 0; c < 3; c++) { head_rgb.data[i * 3 + c] = head_page.data[i * 4 + c]; }
-                head_alpha[i] = head_page.data[i * 4 + 3];
-            }
+			Image head_rgb;
+			head_rgb.w = head_rgb.h = RES;
+			head_rgb.c = 3;
+			head_rgb.data.resize((size_t)RES * RES * 3);
+			std::vector<float> head_alpha((size_t)RES * RES);
+			for (size_t i = 0; i < (size_t)RES * RES; i++) {
+				for (int c = 0; c < 3; c++) {
+					head_rgb.data[i * 3 + c] = head_page.data[i * 4 + c];
+				}
+				head_alpha[i] = head_page.data[i * 4 + 3];
+			}
 
-            std::vector<float> ehs2, pooled2;
-            {
-                SpanScope s(result, trace_id, root.span_id(), "clip.head", cfg.verbose, cfg.spans_path);
-                if (!encode_tags(cfg, HEAD_TAGS_V3, ehs2, pooled2)) { s.ok = false; return false; }
-            }
-            std::vector<Image> head_layers;
-            {
-                SpanScope s(result, trace_id, root.span_id(), "layerdiff.head", cfg.verbose, cfg.spans_path);
-                if (!layerdiff_pass(cfg, head_rgb, ehs2, pooled2, 1, head_layers, HEAD_TAGS_V3)) { s.ok = false; return false; }
-            }
+			std::vector<float> ehs2, pooled2;
+			{
+				SpanScope s(result, trace_id, root.span_id(), "clip.head", cfg.verbose, cfg.spans_path);
+				if (!encode_tags(cfg, HEAD_TAGS_V3, ehs2, pooled2)) {
+					s.ok = false;
+					return false;
+				}
+			}
+			std::vector<Image> head_layers;
+			{
+				SpanScope s(result, trace_id, root.span_id(), "layerdiff.head", cfg.verbose, cfg.spans_path);
+				if (!layerdiff_pass(cfg, head_rgb, ehs2, pooled2, 1, head_layers, HEAD_TAGS_V3)) {
+					s.ok = false;
+					return false;
+				}
+			}
 
-            // reproject each head layer to the fullpage canvas
-            const int ch = head_crop.h, cw = head_crop.w;
-            int py1 = (int) (hp_y / scale), py2 = (int) ((hp_y + ch) / scale);
-            int px1 = (int) (hp_x / scale), px2 = (int) ((hp_x + cw) / scale);
-            int sw = (int) (hp_w / scale), sh = (int) (hp_h / scale);
+			// reproject each head layer to the fullpage canvas
+			const int ch = head_crop.h, cw = head_crop.w;
+			int py1 = (int)(hp_y / scale), py2 = (int)((hp_y + ch) / scale);
+			int px1 = (int)(hp_x / scale), px2 = (int)((hp_x + cw) / scale);
+			int sw = (int)(hp_w / scale), sh = (int)(hp_h / scale);
 
-            {
-                // one span carrying every geometry value used to place the
-                // head-pass output back onto the RES x RES page canvas, as
-                // attributes -- inspect via profiling/spans.jsonl instead
-                // of ad-hoc printf (name="debug.head_geom").
-                SpanScope g(result, trace_id, root.span_id(), "debug.head_geom", cfg.verbose, cfg.spans_path, {
-                    { "hx0", std::to_string(hx0) }, { "hy0", std::to_string(hy0) },
-                    { "hw", std::to_string(hw) }, { "hh", std::to_string(hh) },
-                    { "res", std::to_string(RES) },
-                    { "x1", std::to_string(x1) }, { "y1", std::to_string(y1) },
-                    { "x2", std::to_string(x2) }, { "y2", std::to_string(y2) },
-                    { "input_w", std::to_string(input.w) }, { "input_h", std::to_string(input.h) },
-                    { "head_crop_w", std::to_string(x2 - x1) }, { "head_crop_h", std::to_string(y2 - y1) },
-                    { "scale", std::to_string(scale) },
-                    { "hx1", std::to_string(hx1) }, { "hy1", std::to_string(hy1) },
-                    { "hp_w", std::to_string(hp_w) }, { "hp_h", std::to_string(hp_h) },
-                    { "hp_x", std::to_string(hp_x) }, { "hp_y", std::to_string(hp_y) },
-                    { "py1", std::to_string(py1) }, { "py2", std::to_string(py2) },
-                    { "px1", std::to_string(px1) }, { "px2", std::to_string(px2) },
-                    { "sw", std::to_string(sw) }, { "sh", std::to_string(sh) },
-                });
-            }
+			{
+				// one span carrying every geometry value used to place the
+				// head-pass output back onto the RES x RES page canvas, as
+				// attributes -- inspect via profiling/spans.jsonl instead
+				// of ad-hoc printf (name="debug.head_geom").
+				SpanScope g(result, trace_id, root.span_id(), "debug.head_geom", cfg.verbose, cfg.spans_path, {
+																													  { "hx0", std::to_string(hx0) },
+																													  { "hy0", std::to_string(hy0) },
+																													  { "hw", std::to_string(hw) },
+																													  { "hh", std::to_string(hh) },
+																													  { "res", std::to_string(RES) },
+																													  { "x1", std::to_string(x1) },
+																													  { "y1", std::to_string(y1) },
+																													  { "x2", std::to_string(x2) },
+																													  { "y2", std::to_string(y2) },
+																													  { "input_w", std::to_string(input.w) },
+																													  { "input_h", std::to_string(input.h) },
+																													  { "head_crop_w", std::to_string(x2 - x1) },
+																													  { "head_crop_h", std::to_string(y2 - y1) },
+																													  { "scale", std::to_string(scale) },
+																													  { "hx1", std::to_string(hx1) },
+																													  { "hy1", std::to_string(hy1) },
+																													  { "hp_w", std::to_string(hp_w) },
+																													  { "hp_h", std::to_string(hp_h) },
+																													  { "hp_x", std::to_string(hp_x) },
+																													  { "hp_y", std::to_string(hp_y) },
+																													  { "py1", std::to_string(py1) },
+																													  { "py2", std::to_string(py2) },
+																													  { "px1", std::to_string(px1) },
+																													  { "px2", std::to_string(px2) },
+																													  { "sw", std::to_string(sw) },
+																													  { "sh", std::to_string(sh) },
+																											  });
+			}
 
-            if (!cfg.debug_dir.empty()) {
-                for (size_t t = 0; t < HEAD_TAGS_V3.size(); t++) {
-                    Image & hl = head_layers[t];
-                    int cnt = 0; float amax = 0;
-                    for (size_t i = 0; i < (size_t) hl.w * hl.h; i++) {
-                        float a = hl.data[i * 4 + 3];
-                        if (a > 15.0f / 255.0f) cnt++;
-                        amax = std::max(amax, a);
-                    }
-                    SpanScope s(result, trace_id, root.span_id(), "debug.raw_head_layer", cfg.verbose, cfg.spans_path, {
-                        { "tag", HEAD_TAGS_V3[t] }, { "w", std::to_string(hl.w) }, { "h", std::to_string(hl.h) },
-                        { "alpha_max", std::to_string(amax) }, { "pixels_gt_15_255", std::to_string(cnt) },
-                    });
-                    std::ofstream f(cfg.debug_dir + "/raw_head_" + HEAD_TAGS_V3[t] + ".png", std::ios::binary);
-                    std::vector<uint8_t> png = encode_png(hl);
-                    f.write(reinterpret_cast<const char *>(png.data()), (std::streamsize) png.size());
-                }
-            }
+			if (!cfg.debug_dir.empty()) {
+				for (size_t t = 0; t < HEAD_TAGS_V3.size(); t++) {
+					Image &hl = head_layers[t];
+					int cnt = 0;
+					float amax = 0;
+					for (size_t i = 0; i < (size_t)hl.w * hl.h; i++) {
+						float a = hl.data[i * 4 + 3];
+						if (a > 15.0f / 255.0f) {
+							cnt++;
+						}
+						amax = std::max(amax, a);
+					}
+					SpanScope s(result, trace_id, root.span_id(), "debug.raw_head_layer", cfg.verbose, cfg.spans_path, {
+																															   { "tag", HEAD_TAGS_V3[t] },
+																															   { "w", std::to_string(hl.w) },
+																															   { "h", std::to_string(hl.h) },
+																															   { "alpha_max", std::to_string(amax) },
+																															   { "pixels_gt_15_255", std::to_string(cnt) },
+																													   });
+					std::ofstream f(cfg.debug_dir + "/raw_head_" + HEAD_TAGS_V3[t] + ".png", std::ios::binary);
+					std::vector<uint8_t> png = encode_png(hl);
+					f.write(reinterpret_cast<const char *>(png.data()), (std::streamsize)png.size());
+				}
+			}
 
-            for (size_t t = 0; t < HEAD_TAGS_V3.size(); t++) {
-                Image & hl = head_layers[t];
-                for (size_t i = 0; i < head_alpha.size(); i++) { hl.data[i * 4 + 3] *= head_alpha[i]; }
-                Image big = smart_resize(hl, sw, sh);
-                Image canvas;
-                canvas.w = canvas.h = RES; canvas.c = 4;
-                canvas.data.assign((size_t) RES * RES * 4, 0.0f);
-                for (int yy = py1; yy < py2 && yy < big.h; yy++) {
-                    int cy = hy1 + (yy - py1);
-                    if (cy < 0 || cy >= RES) { continue; }
-                    for (int xx = px1; xx < px2 && xx < big.w; xx++) {
-                        int cx = hx1 + (xx - px1);
-                        if (cx < 0 || cx >= RES) { continue; }
-                        std::copy(big.px(xx, yy), big.px(xx, yy) + 4, canvas.px(cx, cy));
-                    }
-                }
-                v3_layers[HEAD_TAGS_V3[t]] = std::move(canvas);
-            }
-        }
-    }
-    for (auto & kv : v3_layers) { alpha_floor(kv.second); }
+			for (size_t t = 0; t < HEAD_TAGS_V3.size(); t++) {
+				Image &hl = head_layers[t];
+				for (size_t i = 0; i < head_alpha.size(); i++) {
+					hl.data[i * 4 + 3] *= head_alpha[i];
+				}
+				Image big = smart_resize(hl, sw, sh);
+				Image canvas;
+				canvas.w = canvas.h = RES;
+				canvas.c = 4;
+				canvas.data.assign((size_t)RES * RES * 4, 0.0f);
+				for (int yy = py1; yy < py2 && yy < big.h; yy++) {
+					int cy = hy1 + (yy - py1);
+					if (cy < 0 || cy >= RES) {
+						continue;
+					}
+					for (int xx = px1; xx < px2 && xx < big.w; xx++) {
+						int cx = hx1 + (xx - px1);
+						if (cx < 0 || cx >= RES) {
+							continue;
+						}
+						std::copy(big.px(xx, yy), big.px(xx, yy) + 4, canvas.px(cx, cy));
+					}
+				}
+				v3_layers[HEAD_TAGS_V3[t]] = std::move(canvas);
+			}
+		}
+	}
+	for (auto &kv : v3_layers) {
+		alpha_floor(kv.second);
+	}
 
-    if (!cfg.debug_dir.empty()) {
-        for (const char * tag : { "topwear", "face", "nose", "mouth", "headwear" }) {
-            auto it2 = v3_layers.find(tag);
-            if (it2 == v3_layers.end()) continue;
-            Image & im = it2->second;
-            int bx = 0, by = 0, bw = 0, bh = 0;
-            bool found = bbox_alpha(im, 10.0f / 255.0f, &bx, &by, &bw, &bh);
-            SpanScope s(result, trace_id, root.span_id(), "debug.postreproj_layer", cfg.verbose, cfg.spans_path, {
-                { "tag", tag }, { "w", std::to_string(im.w) }, { "h", std::to_string(im.h) },
-                { "bbox_found", found ? "1" : "0" },
-                { "bbox_x", std::to_string(bx) }, { "bbox_y", std::to_string(by) },
-                { "bbox_w", std::to_string(bw) }, { "bbox_h", std::to_string(bh) },
-            });
-            std::ofstream f2(cfg.debug_dir + "/postreproj_" + std::string(tag) + ".png", std::ios::binary);
-            std::vector<uint8_t> png2 = encode_png(im);
-            f2.write(reinterpret_cast<const char *>(png2.data()), (std::streamsize) png2.size());
-        }
-    }
+	if (!cfg.debug_dir.empty()) {
+		for (const char *tag : { "topwear", "face", "nose", "mouth", "headwear" }) {
+			auto it2 = v3_layers.find(tag);
+			if (it2 == v3_layers.end()) {
+				continue;
+			}
+			Image &im = it2->second;
+			int bx = 0, by = 0, bw = 0, bh = 0;
+			bool found = bbox_alpha(im, 10.0f / 255.0f, &bx, &by, &bw, &bh);
+			SpanScope s(result, trace_id, root.span_id(), "debug.postreproj_layer", cfg.verbose, cfg.spans_path, {
+																														 { "tag", tag },
+																														 { "w", std::to_string(im.w) },
+																														 { "h", std::to_string(im.h) },
+																														 { "bbox_found", found ? "1" : "0" },
+																														 { "bbox_x", std::to_string(bx) },
+																														 { "bbox_y", std::to_string(by) },
+																														 { "bbox_w", std::to_string(bw) },
+																														 { "bbox_h", std::to_string(bh) },
+																												 });
+			std::ofstream f2(cfg.debug_dir + "/postreproj_" + std::string(tag) + ".png", std::ios::binary);
+			std::vector<uint8_t> png2 = encode_png(im);
+			f2.write(reinterpret_cast<const char *>(png2.data()), (std::streamsize)png2.size());
+		}
+	}
 
-    // ---- marigold: assemble the V2 list (compose eyes/hair), page last ----
-    const std::map<std::string, std::vector<std::string>> COMPOSE = {
-        { "eyes", { "eyewhite", "irides", "eyelash", "eyebrow" } },
-        { "hair", { "back hair", "front hair" } },
-    };
-    std::vector<Image> v2_list;
-    std::vector<float> blended_alpha((size_t) RES * RES, 0.0f);
-    Image empty;
-    empty.w = empty.h = RES; empty.c = 4;
-    empty.data.assign((size_t) RES * RES * 4, 0.0f);
+	// ---- marigold: assemble the V2 list (compose eyes/hair), page last ----
+	const std::map<std::string, std::vector<std::string>> COMPOSE = {
+		{ "eyes", { "eyewhite", "irides", "eyelash", "eyebrow" } },
+		{ "hair", { "back hair", "front hair" } },
+	};
+	std::vector<Image> v2_list;
+	std::vector<float> blended_alpha((size_t)RES * RES, 0.0f);
+	Image empty;
+	empty.w = empty.h = RES;
+	empty.c = 4;
+	empty.data.assign((size_t)RES * RES * 4, 0.0f);
 
-    for (const std::string & tag : VALID_BODY_PARTS_V2) {
-        Image img = empty;
-        auto cit = COMPOSE.find(tag);
-        if (cit != COMPOSE.end()) {
-            for (const std::string & sub : cit->second) {
-                auto it = v3_layers.find(sub);
-                if (it != v3_layers.end()) { blend_over(img, it->second); }
-            }
-        } else {
-            auto it = v3_layers.find(tag);
-            if (it != v3_layers.end()) { img = it->second; }
-        }
-        for (size_t i = 0; i < blended_alpha.size(); i++) { blended_alpha[i] += img.data[i * 4 + 3]; }
-        v2_list.push_back(std::move(img));
-    }
-    Image page_entry = fullpage;
-    for (size_t i = 0; i < blended_alpha.size(); i++) {
-        page_entry.data[i * 4 + 3] = std::min(1.0f, blended_alpha[i]);
-    }
-    v2_list.push_back(page_entry);
+	for (const std::string &tag : VALID_BODY_PARTS_V2) {
+		Image img = empty;
+		auto cit = COMPOSE.find(tag);
+		if (cit != COMPOSE.end()) {
+			for (const std::string &sub : cit->second) {
+				auto it = v3_layers.find(sub);
+				if (it != v3_layers.end()) {
+					blend_over(img, it->second);
+				}
+			}
+		} else {
+			auto it = v3_layers.find(tag);
+			if (it != v3_layers.end()) {
+				img = it->second;
+			}
+		}
+		for (size_t i = 0; i < blended_alpha.size(); i++) {
+			blended_alpha[i] += img.data[i * 4 + 3];
+		}
+		v2_list.push_back(std::move(img));
+	}
+	Image page_entry = fullpage;
+	for (size_t i = 0; i < blended_alpha.size(); i++) {
+		page_entry.data[i * 4 + 3] = std::min(1.0f, blended_alpha[i]);
+	}
+	v2_list.push_back(page_entry);
 
-    std::vector<Image> depths;
-    {
-        SpanScope s(result, trace_id, root.span_id(), "marigold", cfg.verbose, cfg.spans_path);
-        if (!marigold_depth(cfg, v2_list, depths)) { s.ok = false; return false; }
-        for (Image & d : depths) {
-            if (d.w != RES) { d = smart_resize(d, RES, RES); }
-        }
-    }
+	std::vector<Image> depths;
+	{
+		SpanScope s(result, trace_id, root.span_id(), "marigold", cfg.verbose, cfg.spans_path);
+		if (!marigold_depth(cfg, v2_list, depths)) {
+			s.ok = false;
+			return false;
+		}
+		for (Image &d : depths) {
+			if (d.w != RES) {
+				d = smart_resize(d, RES, RES);
+			}
+		}
+	}
 
-    // ---- assign depths to v3 parts (compose depth_local reconstruction) ----
-    std::map<std::string, Part> parts;
-    auto make_part = [&](const std::string & tag, const Image & img, const Image & depth) {
-        Part p;
-        p.tag = tag;
-        p.img = img;
-        p.depth = depth;
-        p.xyxy[0] = p.xyxy[1] = 0; p.xyxy[2] = RES; p.xyxy[3] = RES;
-        crop_part(p);
-        if (p.img.w > 0) { parts[tag] = std::move(p); }
-    };
+	// ---- assign depths to v3 parts (compose depth_local reconstruction) ----
+	std::map<std::string, Part> parts;
+	auto make_part = [&](const std::string &tag, const Image &img, const Image &depth) {
+		Part p;
+		p.tag = tag;
+		p.img = img;
+		p.depth = depth;
+		p.xyxy[0] = p.xyxy[1] = 0;
+		p.xyxy[2] = RES;
+		p.xyxy[3] = RES;
+		crop_part(p);
+		if (p.img.w > 0) {
+			parts[tag] = std::move(p);
+		}
+	};
 
-    // upstream apply_marigold "depth_local": a tag's own per-layer marigold
-    // decode is only reliable where that content is actually visible in the
-    // composited page -- pixels also claimed by another tag (occl[i], from
-    // the shared blended_alpha) are occluded/hallucinated there, so their
-    // raw per-layer depth estimate is noise; replace it with the median of
-    // this same tag's own visible-region depth instead of trusting it.
-    auto depth_local = [&](const Image & sub, const Image & depth, const std::vector<uint8_t> & occl) {
-        Image dl;
-        dl.w = dl.h = RES; dl.c = 1;
-        dl.data.assign((size_t) RES * RES, 1.0f);
-        std::vector<float> visible, local_all;
-        for (size_t i = 0; i < dl.data.size(); i++) {
-            bool local = sub.data[i * 4 + 3] > 15.0f / 255.0f;
-            if (local) {
-                dl.data[i] = std::min(1.0f, std::max(0.0f, depth.data[i]));
-                local_all.push_back(dl.data[i]);
-                if (!occl[i]) { visible.push_back(dl.data[i]); }
-            }
-        }
-        // Prefer the median over non-occluded ("visible") pixels. But a tag
-        // that sits entirely inside another (eyes within the face/head: every
-        // pixel is in occl_base) has NO visible pixels, and the old 1.0
-        // fallback stamped the whole part to depth 1.0 -- the max -- sorting
-        // it to the very back of the depth-descending stack (eyes behind the
-        // face). That 1.0 was a no-data sentinel, not a depth: upstream keeps
-        // these tags' raw marigold depth median (postproc.cpp:490-505). So
-        // when fully occluded, fall back to the tag's own raw depth median
-        // over its full alpha instead -- still model-derived, never constant.
-        // src is empty only when the tag has no local pixels at all; med is
-        // then never read (the fill loop below only touches local pixels) and
-        // crop_part drops the tag, so the 0.0 here is just to keep the median
-        // expression well-defined on an empty vector, not a depth value.
-        std::vector<float> & src = visible.empty() ? local_all : visible;
-        std::sort(src.begin(), src.end());
-        float med = src.empty() ? 0.0f : src[src.size() / 2];
-        for (size_t i = 0; i < dl.data.size(); i++) {
-            bool local = sub.data[i * 4 + 3] > 15.0f / 255.0f;
-            if (local && occl[i]) { dl.data[i] = med; }
-        }
-        return dl;
-    };
+	// upstream apply_marigold "depth_local": a tag's own per-layer marigold
+	// decode is only reliable where that content is actually visible in the
+	// composited page -- pixels also claimed by another tag (occl[i], from
+	// the shared blended_alpha) are occluded/hallucinated there, so their
+	// raw per-layer depth estimate is noise; replace it with the median of
+	// this same tag's own visible-region depth instead of trusting it.
+	auto depth_local = [&](const Image &sub, const Image &depth, const std::vector<uint8_t> &occl) {
+		Image dl;
+		dl.w = dl.h = RES;
+		dl.c = 1;
+		dl.data.assign((size_t)RES * RES, 1.0f);
+		std::vector<float> visible, local_all;
+		for (size_t i = 0; i < dl.data.size(); i++) {
+			bool local = sub.data[i * 4 + 3] > 15.0f / 255.0f;
+			if (local) {
+				dl.data[i] = std::min(1.0f, std::max(0.0f, depth.data[i]));
+				local_all.push_back(dl.data[i]);
+				if (!occl[i]) {
+					visible.push_back(dl.data[i]);
+				}
+			}
+		}
+		// Prefer the median over non-occluded ("visible") pixels. But a tag
+		// that sits entirely inside another (eyes within the face/head: every
+		// pixel is in occl_base) has NO visible pixels, and the old 1.0
+		// fallback stamped the whole part to depth 1.0 -- the max -- sorting
+		// it to the very back of the depth-descending stack (eyes behind the
+		// face). That 1.0 was a no-data sentinel, not a depth: upstream keeps
+		// these tags' raw marigold depth median (postproc.cpp:490-505). So
+		// when fully occluded, fall back to the tag's own raw depth median
+		// over its full alpha instead -- still model-derived, never constant.
+		// src is empty only when the tag has no local pixels at all; med is
+		// then never read (the fill loop below only touches local pixels) and
+		// crop_part drops the tag, so the 0.0 here is just to keep the median
+		// expression well-defined on an empty vector, not a depth value.
+		std::vector<float> &src = visible.empty() ? local_all : visible;
+		std::sort(src.begin(), src.end());
+		float med = src.empty() ? 0.0f : src[src.size() / 2];
+		for (size_t i = 0; i < dl.data.size(); i++) {
+			bool local = sub.data[i * 4 + 3] > 15.0f / 255.0f;
+			if (local && occl[i]) {
+				dl.data[i] = med;
+			}
+		}
+		return dl;
+	};
 
-    std::vector<uint8_t> occl_base((size_t) RES * RES, 0);
-    for (size_t i = 0; i < occl_base.size(); i++) { occl_base[i] = blended_alpha[i] > 256.0f / 255.0f ? 1 : 0; }
+	std::vector<uint8_t> occl_base((size_t)RES * RES, 0);
+	for (size_t i = 0; i < occl_base.size(); i++) {
+		occl_base[i] = blended_alpha[i] > 256.0f / 255.0f ? 1 : 0;
+	}
 
-    for (size_t v = 0; v < VALID_BODY_PARTS_V2.size(); v++) {
-        const std::string & tag = VALID_BODY_PARTS_V2[v];
-        const Image & depth = depths[v];
-        auto cit = COMPOSE.find(tag);
-        if (cit == COMPOSE.end()) {
-            // standalone tag: single depth_local pass against the shared
-            // base occlusion mask (this tag has no further/back subs of its
-            // own to progressively reveal, so there's nothing to mutate).
-            auto it = v3_layers.find(tag);
-            if (it != v3_layers.end()) {
-                Image dl = depth_local(it->second, depth, occl_base);
-                make_part(tag, it->second, dl);
-            }
-            continue;
-        }
-        // composed tag (hair/eyes): reverse sub order, each sub's own
-        // pixels get marked occluded for subsequent (further-back) subs in
-        // the same group, cascading from the shared base mask.
-        std::vector<uint8_t> occl = occl_base;
-        std::vector<std::string> subs = cit->second;
-        for (auto sit = subs.rbegin(); sit != subs.rend(); ++sit) {
-            auto it = v3_layers.find(*sit);
-            if (it == v3_layers.end()) { continue; }
-            const Image & sub = it->second;
-            Image dl = depth_local(sub, depth, occl);
-            for (size_t i = 0; i < occl.size(); i++) {
-                if (sub.data[i * 4 + 3] > 15.0f / 255.0f) { occl[i] = 1; }
-            }
-            make_part(*sit, sub, dl);
-        }
-    }
+	for (size_t v = 0; v < VALID_BODY_PARTS_V2.size(); v++) {
+		const std::string &tag = VALID_BODY_PARTS_V2[v];
+		const Image &depth = depths[v];
+		auto cit = COMPOSE.find(tag);
+		if (cit == COMPOSE.end()) {
+			// standalone tag: single depth_local pass against the shared
+			// base occlusion mask (this tag has no further/back subs of its
+			// own to progressively reveal, so there's nothing to mutate).
+			auto it = v3_layers.find(tag);
+			if (it != v3_layers.end()) {
+				Image dl = depth_local(it->second, depth, occl_base);
+				make_part(tag, it->second, dl);
+			}
+			continue;
+		}
+		// composed tag (hair/eyes): reverse sub order, each sub's own
+		// pixels get marked occluded for subsequent (further-back) subs in
+		// the same group, cascading from the shared base mask.
+		std::vector<uint8_t> occl = occl_base;
+		std::vector<std::string> subs = cit->second;
+		for (auto sit = subs.rbegin(); sit != subs.rend(); ++sit) {
+			auto it = v3_layers.find(*sit);
+			if (it == v3_layers.end()) {
+				continue;
+			}
+			const Image &sub = it->second;
+			Image dl = depth_local(sub, depth, occl);
+			for (size_t i = 0; i < occl.size(); i++) {
+				if (sub.data[i * 4 + 3] > 15.0f / 255.0f) {
+					occl[i] = 1;
+				}
+			}
+			make_part(*sit, sub, dl);
+		}
+	}
 
-    // ---- heuristics + PNG assembly ----
-    SpanScope postproc(result, trace_id, root.span_id(), "postproc", cfg.verbose, cfg.spans_path);
-    InpaintFn inpaint = make_lama_inpaint(cfg);
-    further_extr_parts(parts, fullpage, inpaint, cfg.partseg_flags,
-                       cfg.depth_split_tags, cfg.lr_split_tags);
+	// ---- heuristics + PNG assembly ----
+	SpanScope postproc(result, trace_id, root.span_id(), "postproc", cfg.verbose, cfg.spans_path);
+	InpaintFn inpaint = make_lama_inpaint(cfg);
+	further_extr_parts(parts, fullpage, inpaint, cfg.partseg_flags,
+			cfg.depth_split_tags, cfg.lr_split_tags);
 
-    // Compose-order z-constraint. compose_list is back->front (e.g. eyes =
-    // eyewhite,irides,eyelash,eyebrow), the model's own paint order for parts
-    // that share a region. The flat depth-median sort below otherwise lets a
-    // few-thousandths marigold-depth wobble flip a nested pair -- most visibly
-    // eyewhite/irides, where the iris is anatomically ALWAYS in front of the
-    // sclera. Enforce it systematically from geometry, not per-tag rules: when
-    // a later (front) group member is spatially CONTAINED in an earlier (back)
-    // member, pull it in front. Containment (not mere overlap) is the key --
-    // irides sits inside eyewhite so it's constrained, while eyebrow only abuts
-    // the eye so it keeps its own (correctly backmost) depth. LR-split parts
-    // carry the -l/-r suffix; the bare name covers the --no-split-lr case.
-    auto contained = [](const int (&in)[4], const int (&out)[4]) {
-        long ix = (long) std::max(0, std::min(in[2], out[2]) - std::max(in[0], out[0]));
-        long iy = (long) std::max(0, std::min(in[3], out[3]) - std::max(in[1], out[1]));
-        long ia = (long) std::max(1, in[2] - in[0]) * std::max(1, in[3] - in[1]);
-        return ix * iy >= 0.7 * (double) ia;
-    };
-    for (const auto & grp : COMPOSE) {
-        const std::vector<std::string> & seq = grp.second;  // back -> front
-        for (const char * suf : { "", "-l", "-r" }) {
-            for (size_t a = 0; a + 1 < seq.size(); a++) {
-                auto pa = parts.find(seq[a] + suf);
-                if (pa == parts.end()) { continue; }
-                for (size_t b = a + 1; b < seq.size(); b++) {
-                    auto pb = parts.find(seq[b] + suf);
-                    if (pb == parts.end()) { continue; }
-                    if (contained(pb->second.xyxy, pa->second.xyxy) &&
-                        pb->second.depth_median >= pa->second.depth_median) {
-                        pb->second.depth_median = pa->second.depth_median - 1e-4;
-                    }
-                }
-            }
-        }
-    }
+	// Compose-order z-constraint. compose_list is back->front (e.g. eyes =
+	// eyewhite,irides,eyelash,eyebrow), the model's own paint order for parts
+	// that share a region. The flat depth-median sort below otherwise lets a
+	// few-thousandths marigold-depth wobble flip a nested pair -- most visibly
+	// eyewhite/irides, where the iris is anatomically ALWAYS in front of the
+	// sclera. Enforce it systematically from geometry, not per-tag rules: when
+	// a later (front) group member is spatially CONTAINED in an earlier (back)
+	// member, pull it in front. Containment (not mere overlap) is the key --
+	// irides sits inside eyewhite so it's constrained, while eyebrow only abuts
+	// the eye so it keeps its own (correctly backmost) depth. LR-split parts
+	// carry the -l/-r suffix; the bare name covers the --no-split-lr case.
+	auto contained = [](const int (&in)[4], const int (&out)[4]) {
+		long ix = (long)std::max(0, std::min(in[2], out[2]) - std::max(in[0], out[0]));
+		long iy = (long)std::max(0, std::min(in[3], out[3]) - std::max(in[1], out[1]));
+		long ia = (long)std::max(1, in[2] - in[0]) * std::max(1, in[3] - in[1]);
+		return ix * iy >= 0.7 * (double)ia;
+	};
+	for (const auto &grp : COMPOSE) {
+		const std::vector<std::string> &seq = grp.second; // back -> front
+		for (const char *suf : { "", "-l", "-r" }) {
+			for (size_t a = 0; a + 1 < seq.size(); a++) {
+				auto pa = parts.find(seq[a] + suf);
+				if (pa == parts.end()) {
+					continue;
+				}
+				for (size_t b = a + 1; b < seq.size(); b++) {
+					auto pb = parts.find(seq[b] + suf);
+					if (pb == parts.end()) {
+						continue;
+					}
+					if (contained(pb->second.xyxy, pa->second.xyxy) &&
+							pb->second.depth_median >= pa->second.depth_median) {
+						pb->second.depth_median = pa->second.depth_median - 1e-4;
+					}
+				}
+			}
+		}
+	}
 
-    std::vector<const Part *> ordered;
-    for (const auto & kv : parts) { ordered.push_back(&kv.second); }
-    // stable_sort: any remaining depth_median ties (should be rare after
-    // postproc.cpp's clamp-ladder fix, but not impossible from raw marigold
-    // output) fall back to `parts`' std::map key order deterministically,
-    // instead of std::sort's unspecified tie-break.
-    std::stable_sort(ordered.begin(), ordered.end(),
-                     [](const Part * a, const Part * b) { return a->depth_median > b->depth_median; });
+	std::vector<const Part *> ordered;
+	for (const auto &kv : parts) {
+		ordered.push_back(&kv.second);
+	}
+	// stable_sort: any remaining depth_median ties (should be rare after
+	// postproc.cpp's clamp-ladder fix, but not impossible from raw marigold
+	// output) fall back to `parts`' std::map key order deterministically,
+	// instead of std::sort's unspecified tie-break.
+	std::stable_sort(ordered.begin(), ordered.end(),
+			[](const Part *a, const Part *b) { return a->depth_median > b->depth_median; });
 
-    // encode each part's color PNG once into result.png_layers
-    result.png_layers.clear();
-    result.depth_layers.clear();
-    result.layer_xyxy.clear();
-    result.layer_depth_median.clear();
-    result.canvas_w = result.canvas_h = RES;
-    for (const Part * p : ordered) {
-        // raw tag, not safe_id(): matches upstream's create_pixel_layer(name=tag)
-        result.png_layers.emplace_back(p->tag, encode_png(p->img));
-        result.layer_xyxy.push_back({ p->xyxy[0], p->xyxy[1], p->xyxy[2], p->xyxy[3] });
-        result.layer_depth_median.push_back(p->depth_median);
+	// encode each part's color PNG once into result.png_layers
+	result.png_layers.clear();
+	result.depth_layers.clear();
+	result.layer_xyxy.clear();
+	result.layer_depth_median.clear();
+	result.canvas_w = result.canvas_h = RES;
+	for (const Part *p : ordered) {
+		// raw tag, not safe_id(): matches upstream's create_pixel_layer(name=tag)
+		result.png_layers.emplace_back(p->tag, encode_png(p->img));
+		result.layer_xyxy.push_back({ p->xyxy[0], p->xyxy[1], p->xyxy[2], p->xyxy[3] });
+		result.layer_depth_median.push_back(p->depth_median);
 
-        Image d1;
-        d1.w = p->depth.w; d1.h = p->depth.h; d1.c = 1;
-        d1.data = p->depth.data;
-        result.depth_layers.emplace_back(p->tag, encode_png(d1));
-    }
+		Image d1;
+		d1.w = p->depth.w;
+		d1.h = p->depth.h;
+		d1.c = 1;
+		d1.data = p->depth.data;
+		result.depth_layers.emplace_back(p->tag, encode_png(d1));
+	}
 
-    // `root` (constructed at the top of this function) and `postproc` both
-    // emit their spans here via RAII as the function returns -- no manual
-    // end-of-function span bookkeeping needed.
-    return true;
+	// `root` (constructed at the top of this function) and `postproc` both
+	// emit their spans here via RAII as the function returns -- no manual
+	// end-of-function span bookkeeping needed.
+	return true;
 }

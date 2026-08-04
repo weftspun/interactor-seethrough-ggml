@@ -3,7 +3,7 @@ default_language_version:
 
 exclude: |
   (?x)^(
-    .*thirdparty/.*|
+    .*third_party/.*|
     .*-(dll|dylib|so)_wrap\.[ch]|
   )$
 
@@ -67,6 +67,7 @@ repos:
     hooks:
       - id: codespell
         additional_dependencies: [tomli]
+        args: [-L, "LaMa,lama,te"]
 
 #
 # End of upstream Godot pre-commit hooks.

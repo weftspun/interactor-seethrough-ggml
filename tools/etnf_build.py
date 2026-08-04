@@ -29,25 +29,30 @@ import pyarrow.parquet as pq
 
 # ── Schemas (Essential Tuple Normal Form — flat, no nesting) ────────────────
 
-SPAN_SCHEMA = pa.schema([
-    pa.field("trace_id",            pa.string(),    nullable=False),
-    pa.field("span_id",             pa.string(),    nullable=False),
-    pa.field("parent_span_id",      pa.string(),    nullable=True),
-    pa.field("name",                pa.string(),    nullable=False),
-    pa.field("start_time_unix_nano", pa.int64(),    nullable=False),
-    pa.field("end_time_unix_nano",   pa.int64(),    nullable=False),
-    pa.field("duration_ms",         pa.float64(),   nullable=False),
-    pa.field("status_code",         pa.int32(),     nullable=False),
-])
+SPAN_SCHEMA = pa.schema(
+    [
+        pa.field("trace_id", pa.string(), nullable=False),
+        pa.field("span_id", pa.string(), nullable=False),
+        pa.field("parent_span_id", pa.string(), nullable=True),
+        pa.field("name", pa.string(), nullable=False),
+        pa.field("start_time_unix_nano", pa.int64(), nullable=False),
+        pa.field("end_time_unix_nano", pa.int64(), nullable=False),
+        pa.field("duration_ms", pa.float64(), nullable=False),
+        pa.field("status_code", pa.int32(), nullable=False),
+    ]
+)
 
-ATTR_SCHEMA = pa.schema([
-    pa.field("span_id",             pa.string(),    nullable=False),
-    pa.field("key",                 pa.string(),    nullable=False),
-    pa.field("value",               pa.string(),    nullable=True),
-])
+ATTR_SCHEMA = pa.schema(
+    [
+        pa.field("span_id", pa.string(), nullable=False),
+        pa.field("key", pa.string(), nullable=False),
+        pa.field("value", pa.string(), nullable=True),
+    ]
+)
 
 
 # ── Parsing ─────────────────────────────────────────────────────────────────
+
 
 def parse_spans(jsonl_path: str) -> tuple[list[dict], list[dict]]:
     """Read spans.jsonl, return (span_rows, attr_rows) in ETNF."""
@@ -61,37 +66,46 @@ def parse_spans(jsonl_path: str) -> tuple[list[dict], list[dict]]:
                 continue
             obj = json.loads(line)
 
-            span_rows.append({
-                "trace_id":            obj.get("trace_id", ""),
-                "span_id":             obj.get("span_id", ""),
-                "parent_span_id":      obj.get("parent_span_id", "") or None,
-                "name":                obj.get("name", ""),
-                "start_time_unix_nano": int(obj.get("start_time_unix_nano", 0)),
-                "end_time_unix_nano":   int(obj.get("end_time_unix_nano", 0)),
-                "duration_ms":         float(obj.get("duration_ms", 0.0)),
-                "status_code":         int(obj.get("status_code", 1)),
-            })
+            span_rows.append(
+                {
+                    "trace_id": obj.get("trace_id", ""),
+                    "span_id": obj.get("span_id", ""),
+                    "parent_span_id": obj.get("parent_span_id", "") or None,
+                    "name": obj.get("name", ""),
+                    "start_time_unix_nano": int(obj.get("start_time_unix_nano", 0)),
+                    "end_time_unix_nano": int(obj.get("end_time_unix_nano", 0)),
+                    "duration_ms": float(obj.get("duration_ms", 0.0)),
+                    "status_code": int(obj.get("status_code", 1)),
+                }
+            )
 
             attrs = obj.get("attributes", {})
             if isinstance(attrs, dict):
                 for k, v in attrs.items():
-                    attr_rows.append({
-                        "span_id": obj["span_id"],
-                        "key":     k,
-                        "value":   str(v) if v is not None else None,
-                    })
+                    attr_rows.append(
+                        {
+                            "span_id": obj["span_id"],
+                            "key": k,
+                            "value": str(v) if v is not None else None,
+                        }
+                    )
             elif isinstance(attrs, list):
                 for item in attrs:
-                    attr_rows.append({
-                        "span_id": obj["span_id"],
-                        "key":     item.get("key", ""),
-                        "value":   str(item.get("value", "")) if item.get("value") is not None else None,
-                    })
+                    attr_rows.append(
+                        {
+                            "span_id": obj["span_id"],
+                            "key": item.get("key", ""),
+                            "value": str(item.get("value", ""))
+                            if item.get("value") is not None
+                            else None,
+                        }
+                    )
 
     return span_rows, attr_rows
 
 
 # ── Idempotent append (dedup by span_id) ────────────────────────────────────
+
 
 def _existing_ids(path: str) -> set:
     if not os.path.isfile(path):
@@ -117,6 +131,7 @@ def _append(path: str, rows: list[dict], schema: pa.Schema):
 
 
 # ── Build ───────────────────────────────────────────────────────────────────
+
 
 def build_lake(jsonl_path: str, output_dir: str):
     os.makedirs(output_dir, exist_ok=True)
@@ -153,13 +168,21 @@ def _fmt_size(path):
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(
-        description="ETNF parquet data lake builder for OTel-style spans")
-    parser.add_argument("--input",  default="profiling/spans.jsonl",
-                        help="Path to spans.jsonl (default: profiling/spans.jsonl)")
-    parser.add_argument("--output", default="profiling/lake",
-                        help="Output directory (default: profiling/lake)")
+        description="ETNF parquet data lake builder for OTel-style spans"
+    )
+    parser.add_argument(
+        "--input",
+        default="profiling/spans.jsonl",
+        help="Path to spans.jsonl (default: profiling/spans.jsonl)",
+    )
+    parser.add_argument(
+        "--output",
+        default="profiling/lake",
+        help="Output directory (default: profiling/lake)",
+    )
     args = parser.parse_args()
 
     if not os.path.isfile(args.input):

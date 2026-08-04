@@ -68,6 +68,7 @@ def quantize_q4_0(arr):
         out += qs[i].tobytes()
     return bytes(out)
 
+
 COMPONENTS = {
     "layerdiff-unet": ("layerdifforg/seethroughv0.0.2_layerdiff3d", "unet"),
     "layerdiff-vae": ("layerdifforg/seethroughv0.0.2_layerdiff3d", "vae"),
@@ -77,9 +78,21 @@ COMPONENTS = {
     # text encoders (transformers CLIPTextModel*, model.safetensors); the value
     # third element names the paired tokenizer subfolder whose vocab/merges are
     # embedded as KV strings so the C++ tokenizer is self-contained
-    "layerdiff-te1": ("layerdifforg/seethroughv0.0.2_layerdiff3d", "text_encoder", "tokenizer"),
-    "layerdiff-te2": ("layerdifforg/seethroughv0.0.2_layerdiff3d", "text_encoder_2", "tokenizer_2"),
-    "marigold-te": ("24yearsold/seethroughv0.0.1_marigold", "text_encoder", "tokenizer"),
+    "layerdiff-te1": (
+        "layerdifforg/seethroughv0.0.2_layerdiff3d",
+        "text_encoder",
+        "tokenizer",
+    ),
+    "layerdiff-te2": (
+        "layerdifforg/seethroughv0.0.2_layerdiff3d",
+        "text_encoder_2",
+        "tokenizer_2",
+    ),
+    "marigold-te": (
+        "24yearsold/seethroughv0.0.1_marigold",
+        "text_encoder",
+        "tokenizer",
+    ),
 }
 
 
@@ -161,9 +174,13 @@ def main():
     ap.add_argument("--subfolder", default=None)
     ap.add_argument("--arch", default=None, help="general.architecture value")
     ap.add_argument("--output", default=None)
-    ap.add_argument("--ftype", type=int, default=1, choices=[0, 1, 2],
-                     help="0=f32, 1=f16 (default), 2=q4_0 (Linear weights only, "
-                          "rest stays f16/f32)")
+    ap.add_argument(
+        "--ftype",
+        type=int,
+        default=1,
+        choices=[0, 1, 2],
+        help="0=f32, 1=f16 (default), 2=q4_0 (Linear weights only, rest stays f16/f32)",
+    )
     args = ap.parse_args()
 
     tok_sub = None
@@ -177,6 +194,7 @@ def main():
         tok_sub = entry[2] if len(entry) > 2 else None
 
     from huggingface_hub import hf_hub_download
+
     fname = "model.safetensors" if tok_sub else "diffusion_pytorch_model.safetensors"
     model_path = hf_hub_download(repo, f"{sub}/{fname}")
     cfg_path = hf_hub_download(repo, f"{sub}/config.json")
@@ -197,9 +215,13 @@ def main():
         kv_str(kv_prefix + "config_json", cfg_json),
     ]
     if tok_sub:
-        with open(hf_hub_download(repo, f"{tok_sub}/vocab.json"), encoding="utf-8") as f:
+        with open(
+            hf_hub_download(repo, f"{tok_sub}/vocab.json"), encoding="utf-8"
+        ) as f:
             metadata.append(kv_str(kv_prefix + "vocab_json", f.read()))
-        with open(hf_hub_download(repo, f"{tok_sub}/merges.txt"), encoding="utf-8") as f:
+        with open(
+            hf_hub_download(repo, f"{tok_sub}/merges.txt"), encoding="utf-8"
+        ) as f:
             metadata.append(kv_str(kv_prefix + "merges_txt", f.read()))
 
     print("loading state_dict...")

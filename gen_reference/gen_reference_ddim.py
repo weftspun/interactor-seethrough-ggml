@@ -2,19 +2,22 @@
 """M8 scheduler reference: Marigold's DDIM (v_prediction, zero-SNR rescale,
 trailing, 4 steps, eta 0) trajectory with an analytic fake model
 (v = 0.1*x + e)."""
+
 import os
-os.makedirs('gen_reference', exist_ok=True)
 import numpy as np
 import torch
 from diffusers import DDIMScheduler
+
+os.makedirs("gen_reference", exist_ok=True)
 
 STEPS = 4
 D = 64
 
 
 def main():
-    sch = DDIMScheduler.from_pretrained("24yearsold/seethroughv0.0.1_marigold",
-                                        subfolder="scheduler")
+    sch = DDIMScheduler.from_pretrained(
+        "24yearsold/seethroughv0.0.1_marigold", subfolder="scheduler"
+    )
     sch.set_timesteps(STEPS)
     print("timesteps:", sch.timesteps.tolist())
 

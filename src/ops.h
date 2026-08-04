@@ -13,115 +13,119 @@
 // not collide across the See-Through components), plus the per-subgraph
 // normalization/attention knobs the block helpers read.
 struct Model {
-    std::vector<ggml_context *> ctx_w;   // one per gguf
-    ggml_context * ctx_g = nullptr;      // graph (no_alloc), set by the caller
+	std::vector<ggml_context *> ctx_w; // one per gguf
+	ggml_context *ctx_g = nullptr; // graph (no_alloc), set by the caller
 
-    std::map<std::string, ggml_tensor *> weights;
-    std::map<std::string, std::string>   config_json;  // per arch KV, if present
+	std::map<std::string, ggml_tensor *> weights;
+	std::map<std::string, std::string> config_json; // per arch KV, if present
 
-    // set before building a subgraph
-    int   gn_groups = 32;
-    float gn_eps    = 1e-6f;
-    int   head_dim  = 0;      // spatial attn: 0 = one head of dim C
-    bool  linear_fast = false; // linear() GEMMs at backend-default precision
-                              // instead of GGML_PREC_F32 (2026-07-20 A/B:
-                              // full-pipeline fast-linear drifted only the
-                              // tiny head-pass facial layers; callers may
-                              // scope this per pass)
-    bool  flash_attn = false; // token attention via ggml_flash_attn_ext (GPU)
-    bool  kv_f32    = false; // flash_attn: cast K/V to f32 for Metal backend precision
-    bool  tiled_naive_attn = false; // query-tiled naive attention instead of
-                                  // flash_attn: same math as the plain naive
-                                  // path but chunked over Tq so the (Tk,Tq,H,B)
-                                  // kq intermediate stays VRAM-bounded at
-                                  // production token counts (see attn_tokens
-                                  // in unet_frame.cpp) -- a diagnostic/
-                                  // fallback path for the suspected 1280px
-                                  // flash_attn defect (docs/ggml-upstream-
-                                  // issues.md #4)
-    bool  direct_conv = false;   // ggml_conv_2d_direct instead of im2col
-                                 // (huge peak-VRAM win; WRONG for the VAE
-                                 // encoder stride-2/pad-0 downsample path
-                                 // and silently zero on Vulkan at very
-                                 // large spatial sizes)
-    bool  conv_row_chunk = false; // tile stride-1 k3 convs over output rows
-                                  // so im2col transients stay small (exact
-                                  // numerics; decode-stage low-VRAM path;
-                                  // also used for the UNet's finest latent
-                                  // level, batch(frames)-generic)
-    int64_t conv_row_chunk_min_hw = 256 * 256;  // spatial-size floor to
-                                  // engage row-chunking; the UNet uses a
-                                  // much lower floor to cover its smaller
-                                  // (but batched) latent-space convs
-    bool  conv_f16 = true;        // f16 im2col for f16 weights (halves im2col
-                                  // traffic); CLI --no-conv-f16 forces f32
-    int64_t rowchunk_budget_mb = 2048;  // per-chunk im2col VRAM budget that
-                                  // sizes the row-chunk count (CLI
-                                  // --rowchunk-budget-mb)
-    bool  linear_fast_all = false; // force backend-default-precision linear()
-                                  // on every model, not just the body pass
-                                  // (CLI --linear-fast)
-    bool  geglu_tile = false;     // tile the transformer GEGLU feed-forward
-                                  // over tokens so its ~2560-dim f32 proj
-                                  // transient (3.4GB at res=1280) stays
-                                  // VRAM-bounded; exact (geglu is per-token)
+	// set before building a subgraph
+	int gn_groups = 32;
+	float gn_eps = 1e-6f;
+	int head_dim = 0; // spatial attn: 0 = one head of dim C
+	bool linear_fast = false; // linear() GEMMs at backend-default precision
+							  // instead of GGML_PREC_F32 (2026-07-20 A/B:
+							  // full-pipeline fast-linear drifted only the
+							  // tiny head-pass facial layers; callers may
+							  // scope this per pass)
+	bool flash_attn = false; // token attention via ggml_flash_attn_ext (GPU)
+	bool kv_f32 = false; // flash_attn: cast K/V to f32 for Metal backend precision
+	bool tiled_naive_attn = false; // query-tiled naive attention instead of
+								   // flash_attn: same math as the plain naive
+								   // path but chunked over Tq so the (Tk,Tq,H,B)
+								   // kq intermediate stays VRAM-bounded at
+								   // production token counts (see attn_tokens
+								   // in unet_frame.cpp) -- a diagnostic/
+								   // fallback path for the suspected 1280px
+								   // flash_attn defect (docs/ggml-upstream-
+								   // issues.md #4)
+	bool direct_conv = false; // ggml_conv_2d_direct instead of im2col
+							  // (huge peak-VRAM win; WRONG for the VAE
+							  // encoder stride-2/pad-0 downsample path
+							  // and silently zero on Vulkan at very
+							  // large spatial sizes)
+	bool conv_row_chunk = false; // tile stride-1 k3 convs over output rows
+								 // so im2col transients stay small (exact
+								 // numerics; decode-stage low-VRAM path;
+								 // also used for the UNet's finest latent
+								 // level, batch(frames)-generic)
+	int64_t conv_row_chunk_min_hw = 256 * 256; // spatial-size floor to
+											   // engage row-chunking; the UNet uses a
+											   // much lower floor to cover its smaller
+											   // (but batched) latent-space convs
+	bool conv_f16 = true; // f16 im2col for f16 weights (halves im2col
+						  // traffic); CLI --no-conv-f16 forces f32
+	int64_t rowchunk_budget_mb = 2048; // per-chunk im2col VRAM budget that
+									   // sizes the row-chunk count (CLI
+									   // --rowchunk-budget-mb)
+	bool linear_fast_all = false; // force backend-default-precision linear()
+								  // on every model, not just the body pass
+								  // (CLI --linear-fast)
+	bool geglu_tile = false; // tile the transformer GEGLU feed-forward
+							 // over tokens so its ~2560-dim f32 proj
+							 // transient (3.4GB at res=1280) stays
+							 // VRAM-bounded; exact (geglu is per-token)
 
-    // diagnostic stage taps (docs/ggml-upstream-issues.md #4): when set,
-    // vae_decode/unet1024 push_back a tap after each major stage and mark
-    // the tensor GGML_TENSOR_FLAG_OUTPUT so gallocr preserves its buffer
-    // through to the end of the graph; the caller reads them all back
-    // after compute (shape captured at tap time, not read-back time --
-    // ctx_g and its tensors are freed by then) to bisect where a defect
-    // first appears
-    struct DebugTap { std::string name; int64_t ne[4]; ggml_tensor * t; };
-    bool debug_capture = false;
-    std::vector<DebugTap> debug_taps;
+	// diagnostic stage taps (docs/ggml-upstream-issues.md #4): when set,
+	// vae_decode/unet1024 push_back a tap after each major stage and mark
+	// the tensor GGML_TENSOR_FLAG_OUTPUT so gallocr preserves its buffer
+	// through to the end of the graph; the caller reads them all back
+	// after compute (shape captured at tap time, not read-back time --
+	// ctx_g and its tensors are freed by then) to bisect where a defect
+	// first appears
+	struct DebugTap {
+		std::string name;
+		int64_t ne[4];
+		ggml_tensor *t;
+	};
+	bool debug_capture = false;
+	std::vector<DebugTap> debug_taps;
 
-    Model() = default;
-    Model(const Model &) = delete;
-    Model & operator=(const Model &) = delete;
-    ~Model();                            // frees weight contexts + backend buffers
+	Model() = default;
+	Model(const Model &) = delete;
+	Model &operator=(const Model &) = delete;
+	~Model(); // frees weight contexts + backend buffers
 
-    bool load(const char * path);        // merge tensors from a gguf (host RAM)
-    // load into a backend buffer (e.g. Vulkan VRAM); pass the buffer type
-    // from ggml_backend_get_default_buffer_type(backend)
-    bool load_backend(const char * path, struct ggml_backend_buffer_type * buft);
-    std::vector<struct ggml_backend_buffer *> bufs;   // owned backend buffers
-    ggml_tensor * get(const std::string & name) const;   // exits on miss
-    bool has(const std::string & name) const;
+	bool load(const char *path); // merge tensors from a gguf (host RAM)
+	// load into a backend buffer (e.g. Vulkan VRAM); pass the buffer type
+	// from ggml_backend_get_default_buffer_type(backend)
+	bool load_backend(const char *path, struct ggml_backend_buffer_type *buft);
+	std::vector<struct ggml_backend_buffer *> bufs; // owned backend buffers
+	ggml_tensor *get(const std::string &name) const; // exits on miss
+	bool has(const std::string &name) const;
 };
 
 // (1,1,C,1) reshape for NCHW-broadcast of a per-channel bias
-ggml_tensor * bias4d(ggml_context * ctx, ggml_tensor * b);
+ggml_tensor *bias4d(ggml_context *ctx, ggml_tensor *b);
 
 // diagnostic stage tap (docs/ggml-upstream-issues.md #4): no-op unless
 // m.debug_capture is set; otherwise marks t as a graph output (so gallocr
 // preserves its buffer) and records it in m.debug_taps for the caller to
 // read back and visualize after compute
-void debug_tap(Model & m, const std::string & name, ggml_tensor * t);
+void debug_tap(Model &m, const std::string &name, ggml_tensor *t);
 
 // conv + bias; pad 0 for 1x1 convs
-ggml_tensor * conv2d(Model & m, ggml_tensor * x, const std::string & pre,
-                     int stride = 1, int pad = 1);
+ggml_tensor *conv2d(Model &m, ggml_tensor *x, const std::string &pre,
+		int stride = 1, int pad = 1);
 // f32-precision matmul with Metal-aware half-precision workarounds
-ggml_tensor * mul_mat_f32(ggml_context * ctx, ggml_tensor * a, ggml_tensor * b);
+ggml_tensor *mul_mat_f32(ggml_context *ctx, ggml_tensor *a, ggml_tensor *b);
 
 // GroupNorm(m.gn_groups, m.gn_eps) + affine
-ggml_tensor * group_norm_affine(Model & m, ggml_tensor * x, const std::string & pre);
+ggml_tensor *group_norm_affine(Model &m, ggml_tensor *x, const std::string &pre);
 
 // LayerNorm over ne[0] + affine, for token-major (C, T) activations
-ggml_tensor * layer_norm_affine(Model & m, ggml_tensor * x, const std::string & pre,
-                                float eps = 1e-5f);
+ggml_tensor *layer_norm_affine(Model &m, ggml_tensor *x, const std::string &pre,
+		float eps = 1e-5f);
 
 // y = W x + b for token-major (C_in, T) activations (bias optional: skipped
 // when "<pre>.bias" is absent, e.g. diffusers attention qkv projections)
-ggml_tensor * linear(Model & m, ggml_tensor * x, const std::string & pre);
+ggml_tensor *linear(Model &m, ggml_tensor *x, const std::string &pre);
 
 // diffusers ResnetBlock2D, output_scale_factor=1; temb (C_t, F) is projected
 // through "<pre>.time_emb_proj" and added after conv1 (nullptr = skip)
-ggml_tensor * resnet_block(Model & m, ggml_tensor * x, const std::string & pre,
-                           ggml_tensor * temb = nullptr);
+ggml_tensor *resnet_block(Model &m, ggml_tensor *x, const std::string &pre,
+		ggml_tensor *temb = nullptr);
 
 // diffusers Attention: GroupNorm-prenorm spatial self-attention with residual;
 // heads of dim m.head_dim (0 = single head of dim C)
-ggml_tensor * attn_block(Model & m, ggml_tensor * x, const std::string & pre);
+ggml_tensor *attn_block(Model &m, ggml_tensor *x, const std::string &pre);

@@ -10,13 +10,13 @@
 #include <stdint.h>
 
 #if defined(_WIN32)
-#  if defined(ST2_BUILD_DLL)
-#    define ST2_API __declspec(dllexport)
-#  else
-#    define ST2_API __declspec(dllimport)
-#  endif
+#if defined(ST2_BUILD_DLL)
+#define ST2_API __declspec(dllexport)
 #else
-#  define ST2_API __attribute__((visibility("default")))
+#define ST2_API __declspec(dllimport)
+#endif
+#else
+#define ST2_API __attribute__((visibility("default")))
 #endif
 
 #ifdef __cplusplus
@@ -24,14 +24,14 @@ extern "C" {
 #endif
 
 typedef struct st_layer {
-    char * tag;           // e.g. "topwear"; null-terminated, owned by the result
-    uint8_t * png;         // PNG-encoded RGBA bytes, owned by the result
-    size_t png_len;
+	char *tag; // e.g. "topwear"; null-terminated, owned by the result
+	uint8_t *png; // PNG-encoded RGBA bytes, owned by the result
+	size_t png_len;
 } st_layer;
 
 typedef struct st_render_result {
-    st_layer * layers;      // z-ordered back-to-front
-    size_t num_layers;
+	st_layer *layers; // z-ordered back-to-front
+	size_t num_layers;
 } st_render_result;
 
 // Renders one encoded image (anything stb_image can decode: PNG/JPEG/etc.)
@@ -41,11 +41,11 @@ typedef struct st_render_result {
 // model load failure, or a pipeline stage returning false) with *out left
 // zero-initialized. On success, the caller must release *out via
 // st_free_result exactly once.
-ST2_API int st_render(const char * model_dir, const uint8_t * image_data, size_t image_len,
-                      int steps, int res, int depth_res, uint64_t seed, const char * device,
-                      st_render_result * out);
+ST2_API int st_render(const char *model_dir, const uint8_t *image_data, size_t image_len,
+		int steps, int res, int depth_res, uint64_t seed, const char *device,
+		st_render_result *out);
 
-ST2_API void st_free_result(st_render_result * r);
+ST2_API void st_free_result(st_render_result *r);
 
 #ifdef __cplusplus
 }

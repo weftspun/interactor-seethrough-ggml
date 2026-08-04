@@ -7,20 +7,35 @@ mirroring how See-Through calls each encoder:
   marigold-te: encode_empty_text — "" with do_not_pad ([BOS,EOS]), final-LN
     last_hidden_state.
 Records: ids (as f32), penultimate/final [n,d], (te2: pooled [1280])."""
-import sys
 
+import sys
 import os
-os.makedirs('gen_reference', exist_ok=True)
 import numpy as np
 import torch
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 
+os.makedirs("gen_reference", exist_ok=True)
 PROMPT = "solo, 1girl, blue hair, cat ears, school uniform"
 
 COMPONENTS = {
-    "layerdiff-te1": ("layerdifforg/seethroughv0.0.2_layerdiff3d", "text_encoder", "tokenizer", CLIPTextModel),
-    "layerdiff-te2": ("layerdifforg/seethroughv0.0.2_layerdiff3d", "text_encoder_2", "tokenizer_2", CLIPTextModelWithProjection),
-    "marigold-te": ("24yearsold/seethroughv0.0.1_marigold", "text_encoder", "tokenizer", CLIPTextModel),
+    "layerdiff-te1": (
+        "layerdifforg/seethroughv0.0.2_layerdiff3d",
+        "text_encoder",
+        "tokenizer",
+        CLIPTextModel,
+    ),
+    "layerdiff-te2": (
+        "layerdifforg/seethroughv0.0.2_layerdiff3d",
+        "text_encoder_2",
+        "tokenizer_2",
+        CLIPTextModelWithProjection,
+    ),
+    "marigold-te": (
+        "24yearsold/seethroughv0.0.1_marigold",
+        "text_encoder",
+        "tokenizer",
+        CLIPTextModel,
+    ),
 }
 
 
@@ -34,18 +49,28 @@ def main():
     arrays = []
     with torch.no_grad():
         if comp == "marigold-te":
-            ids = tok("", padding="do_not_pad", max_length=tok.model_max_length,
-                      truncation=True, return_tensors="pt").input_ids
-            final = te(ids)[0][0]                      # last_hidden_state [2, 1024]
+            ids = tok(
+                "",
+                padding="do_not_pad",
+                max_length=tok.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            ).input_ids
+            final = te(ids)[0][0]  # last_hidden_state [2, 1024]
             arrays = [ids[0].float(), final]
         else:
-            ids = tok(PROMPT, padding="max_length", max_length=tok.model_max_length,
-                      truncation=True, return_tensors="pt").input_ids
+            ids = tok(
+                PROMPT,
+                padding="max_length",
+                max_length=tok.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            ).input_ids
             out = te(ids, output_hidden_states=True)
-            penult = out.hidden_states[-2][0]          # [77, d]
+            penult = out.hidden_states[-2][0]  # [77, d]
             arrays = [ids[0].float(), penult]
             if comp == "layerdiff-te2":
-                arrays.append(out[0][0])               # projected pooled [1280]
+                arrays.append(out[0][0])  # projected pooled [1280]
     for a in arrays:
         print("shape", tuple(a.shape), "mean", float(a.float().mean()))
 

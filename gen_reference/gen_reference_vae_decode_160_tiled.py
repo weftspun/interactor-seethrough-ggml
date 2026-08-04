@@ -7,6 +7,7 @@ JUST the AutoencoderKL tiled decode (vae.enable_tiling(); vae.decode(z)),
 at the actual production shape (z: 1,4,160,160 -> pixel: 1,3,1280,1280),
 to check whether vae_decode_tiled itself is now correct (pointing at
 unet1024 as the remaining culprit) or still broken."""
+
 import os
 
 import numpy as np
@@ -18,7 +19,7 @@ ZR = 160
 
 
 def main():
-    os.makedirs('gen_reference', exist_ok=True)
+    os.makedirs("gen_reference", exist_ok=True)
     vae = AutoencoderKL.from_pretrained(REPO, subfolder="vae")
     vae.eval().float()
     vae.enable_tiling()
@@ -28,7 +29,14 @@ def main():
 
     with torch.no_grad():
         pixel = vae.decode(z).sample
-    print("pixel:", tuple(pixel.shape), "mean", float(pixel.mean()), "std", float(pixel.std()))
+    print(
+        "pixel:",
+        tuple(pixel.shape),
+        "mean",
+        float(pixel.mean()),
+        "std",
+        float(pixel.std()),
+    )
 
     out = "gen_reference/reference_vae_decode_160_tiled.bin"
     with open(out, "wb") as f:

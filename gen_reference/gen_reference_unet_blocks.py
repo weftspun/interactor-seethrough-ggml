@@ -13,15 +13,10 @@ Blocks covered, mirroring how the full model composes them:
 
 Needs SEETHROUGH_DIR (upstream repo) on sys.path for transformer3d/layerdiff3d.
 """
+
 import os
 import sys
 
-_ROOT = os.environ.get("SEETHROUGH_DIR", r"C:\Users\ernes\Desktop\see-through")
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "common"))
-
-import os
-os.makedirs('gen_reference', exist_ok=True)
 import numpy as np
 import torch
 from huggingface_hub import hf_hub_download
@@ -32,6 +27,13 @@ from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from common.modules.layerdiffuse.transformer3d import Transformer3DModel
 from common.modules.layerdiffuse.layerdiff3d import GroupEmbedding
 
+_ROOT = os.environ.get("SEETHROUGH_DIR", r"C:\Users\ernes\Desktop\see-through")
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "common"))
+
+
+os.makedirs("gen_reference", exist_ok=True)
+
 REPO = "layerdifforg/seethroughv0.0.2_layerdiff3d"
 F = 13
 
@@ -41,7 +43,7 @@ def load_subset(path, prefix):
     with safe_open(path, framework="pt") as f:
         for k in f.keys():
             if k.startswith(prefix):
-                sd[k[len(prefix):]] = f.get_tensor(k).float()
+                sd[k[len(prefix) :]] = f.get_tensor(k).float()
     assert sd, f"no keys under {prefix}"
     return sd
 
@@ -52,8 +54,9 @@ def main():
     arrays = []
 
     # 1. resnet + temb
-    resnet = ResnetBlock2D(in_channels=320, out_channels=640, temb_channels=1280,
-                           eps=1e-5, groups=32)
+    resnet = ResnetBlock2D(
+        in_channels=320, out_channels=640, temb_channels=1280, eps=1e-5, groups=32
+    )
     resnet.load_state_dict(load_subset(path, "down_blocks.1.resnets.0."))
     resnet.eval()
     x = torch.randn(F, 320, 16, 16, generator=g)
@@ -64,9 +67,14 @@ def main():
     print("resnet:", tuple(y.shape), float(y.mean()))
 
     # 2. Transformer3D (2 layers -> temporal stride 1)
-    t3d = Transformer3DModel(num_attention_heads=10, attention_head_dim=64,
-                             in_channels=640, num_layers=2, cross_attention_dim=2048,
-                             use_linear_projection=True)
+    t3d = Transformer3DModel(
+        num_attention_heads=10,
+        attention_head_dim=64,
+        in_channels=640,
+        num_layers=2,
+        cross_attention_dim=2048,
+        use_linear_projection=True,
+    )
     t3d.load_state_dict(load_subset(path, "down_blocks.1.attentions.0."))
     t3d.eval()
     tx = torch.randn(F, 640, 16, 16, generator=g)
