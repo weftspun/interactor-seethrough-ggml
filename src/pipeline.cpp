@@ -1412,15 +1412,39 @@ bool run_see_through(const PipelineConfig &cfg, const Image &input, SeeThroughRe
 				std::copy(input.px(x1, yy), input.px(x1, yy) + (size_t)head_crop.w * 4,
 						head_crop.data.begin() + (size_t)(yy - y1) * head_crop.w * 4);
 			}
+			// Head-pass resolution: the head is a face crop that gets diffused
+			// then downscaled back to ~its native size on the page. Running it
+			// at the full page RES computes far more pixels than survive that
+			// downscale. Size the head canvas to the head content's own size in
+			// page coords (head_crop / scale), clamped to [cfg.head_res, RES]:
+			// never below the floor (small facial features need resolution),
+			// never above the page res, otherwise matched to the output size so
+			// close-up portraits are not undersampled. Round up to 64 for
+			// trans-vae's 6-stage decoder skip connections.
+			int head_full = (int)std::ceil(std::max(head_crop.w, head_crop.h) / scale);
+			int HR = ((head_full + 63) / 64) * 64;
+			if (HR < cfg.head_res) {
+				HR = cfg.head_res;
+			}
+			if (HR > RES) {
+				HR = RES;
+			}
+
 			int hp_w, hp_h, hp_x, hp_y;
-			Image head_page = center_square_pad_resize(head_crop, RES, 0.0f, &hp_w, &hp_h, &hp_x, &hp_y);
+			Image head_page = center_square_pad_resize(head_crop, HR, 0.0f, &hp_w, &hp_h, &hp_x, &hp_y);
+			// hp_* come back in NATIVE (pre-resize) crop pixels: the function
+			// pads to a max(w,h) square BEFORE scaling to the target, so these
+			// geometry values are the same for any target and the reprojection
+			// below (py1/px1/sw/sh via hp_*/scale) is already independent of HR.
+			// Only the diffusion canvas size (head_page/head_rgb/head_alpha and
+			// the head_layers output) changes with HR.
 
 			Image head_rgb;
-			head_rgb.w = head_rgb.h = RES;
+			head_rgb.w = head_rgb.h = HR;
 			head_rgb.c = 3;
-			head_rgb.data.resize((size_t)RES * RES * 3);
-			std::vector<float> head_alpha((size_t)RES * RES);
-			for (size_t i = 0; i < (size_t)RES * RES; i++) {
+			head_rgb.data.resize((size_t)HR * HR * 3);
+			std::vector<float> head_alpha((size_t)HR * HR);
+			for (size_t i = 0; i < (size_t)HR * HR; i++) {
 				for (int c = 0; c < 3; c++) {
 					head_rgb.data[i * 3 + c] = head_page.data[i * 4 + c];
 				}
@@ -1461,6 +1485,7 @@ bool run_see_through(const PipelineConfig &cfg, const Image &input, SeeThroughRe
 																													  { "hw", std::to_string(hw) },
 																													  { "hh", std::to_string(hh) },
 																													  { "res", std::to_string(RES) },
+																													  { "head_res", std::to_string(HR) },
 																													  { "x1", std::to_string(x1) },
 																													  { "y1", std::to_string(y1) },
 																													  { "x2", std::to_string(x2) },

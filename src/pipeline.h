@@ -18,6 +18,14 @@ struct PipelineConfig {
 	std::string model_dir = "models";
 	int steps = 30;
 	int res = 1280;
+	// Head-pass resolution FLOOR. The head is a face crop that gets diffused
+	// then downscaled back to its ~native size on the page. Running it at the
+	// full `res` (1280) computes ~34x more pixels than survive the downscale.
+	// The head canvas is sized adaptively to clamp(native head size, head_res,
+	// res): never below this floor (small facial features need the resolution),
+	// never above the page res, otherwise matched to the actual output size so
+	// close-up portraits are not undersampled. --head-res sets the floor.
+	int head_res = 512;
 	int depth_res = 768;
 	int depth_steps = 4;
 	uint64_t seed = 42;
