@@ -81,7 +81,7 @@ target_link_libraries(seethrough PUBLIC ggml)
 if (GGML_CPU)
     target_compile_definitions(seethrough PUBLIC SEETHROUGH_HAVE_CPU_BACKEND)
 endif()
-target_include_directories(seethrough PUBLIC src stb)
+target_include_directories(seethrough PUBLIC src third_party/stb)
 target_include_directories(seethrough PRIVATE third_party/ggml/src)
 
 add_executable(see-through src/see_through.cpp src/psd_write.cpp)
@@ -125,6 +125,6 @@ endforeach()
 
 add_executable(psd_layers tests/psd_layers.cpp)
 target_link_libraries(psd_layers PRIVATE Psd)
-target_include_directories(psd_layers PRIVATE src stb)
+target_include_directories(psd_layers PRIVATE src third_party/stb)
 target_sources(psd_layers PRIVATE src/image_utils.cpp)
 
