@@ -2,7 +2,7 @@
 // per-layer PNGs), the full upstream inference_psd.py flow on ggml.
 //
 //   see-through -m <model-dir> -i in.png -o out.psd
-//               [--seed N] [--steps N] [--res N] [--head-res N] [--depth-res N] [--threads N]
+//               [--seed N] [--steps N] [--res N] [--depth-res N] [--threads N]
 //               [--no-split-depth] [--no-split-lr]
 //               [--split-depth-tags tag1,tag2,...] [--split-lr-tags tag1,tag2,...]
 //               [--no-conv-f16] [--rowchunk-budget-mb N] [--linear-fast]
@@ -82,8 +82,6 @@ int main(int argc, char **argv) {
 			cfg.steps = std::stoi(next());
 		} else if (a == "--res") {
 			cfg.res = std::stoi(next());
-		} else if (a == "--head-res") {
-			cfg.head_res = std::stoi(next());
 		} else if (a == "--depth-res") {
 			cfg.depth_res = std::stoi(next());
 		} else if (a == "--threads") {
@@ -123,7 +121,7 @@ int main(int argc, char **argv) {
 	}
 	if (in_path.empty()) {
 		fprintf(stderr, "usage: see-through -m <model-dir> -i in.png -o out.psd "
-						"[--seed N] [--steps N] [--res N] [--head-res N] [--depth-res N] [--threads N] "
+						"[--seed N] [--steps N] [--res N] [--depth-res N] [--threads N] "
 						"[--device vulkan] (GPU-only; --device cpu is not supported) "
 						"[--no-split-depth] [--no-split-lr] "
 						"[--split-depth-tags tag1,tag2,...] [--split-lr-tags tag1,tag2,...] "
@@ -146,13 +144,6 @@ int main(int argc, char **argv) {
 						"this for its 6-stage skip connections) -- rounding up to %d\n",
 				cfg.res, res64);
 		cfg.res = res64;
-	}
-	int hres64 = round_up(cfg.head_res, 64);
-	if (hres64 != cfg.head_res) {
-		fprintf(stderr, "note: --head-res %d is not a multiple of 64 (trans-vae's decoder needs "
-						"this for its 6-stage skip connections) -- rounding up to %d\n",
-				cfg.head_res, hres64);
-		cfg.head_res = hres64;
 	}
 	int depth8 = round_up(cfg.depth_res, 8);
 	if (depth8 != cfg.depth_res) {
