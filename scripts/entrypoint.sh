@@ -104,9 +104,17 @@ if [[ "${1:-}" == "selftest" ]]; then
   emit INFO "selftest start" "$(jq -nc --arg c "${NVIDIA_DRIVER_CAPABILITIES:-unset}" \
     '{"event.name":"selftest.start","nvidia.driver.capabilities":$c}')"
 
-  if ls -1 /usr/share/vulkan/icd.d/ 2>&1 | emit_stream INFO "vulkan.icd.manifest"; then :; else
-    emit ERROR "no ICD directory" '{"event.name":"vulkan.icd.missing"}'; rc=1
-  fi
+  # The driver may inject its manifest into either location; checking only
+  # /usr/share produced a false alarm on 2026-08-13 while the loader was in
+  # fact reading /etc/vulkan/icd.d.
+  found_icd=0
+  for d in /usr/share/vulkan/icd.d /etc/vulkan/icd.d; do
+    if ls -1 "$d" >/dev/null 2>&1; then
+      found_icd=1
+      ls -1 "$d" 2>&1 | emit_stream INFO "vulkan.icd.manifest"
+    fi
+  done
+  [[ "$found_icd" -eq 1 ]] || { emit ERROR "no ICD manifest directory" '{"event.name":"vulkan.icd.missing"}'; rc=1; }
 
   if vulkaninfo --summary 2>&1 | sed -n '1,40p' | emit_stream INFO "vulkan.info"; then :; else
     emit ERROR "vulkaninfo failed" '{"event.name":"vulkan.info.failed"}'; rc=1

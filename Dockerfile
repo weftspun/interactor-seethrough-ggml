@@ -45,7 +45,16 @@ FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libvulkan1 vulkan-tools ca-certificates curl jq zstd netcat-openbsd \
+      libxext6 libx11-6 libxcb1 libxau6 libxdmcp6 \
     && rm -rf /var/lib/apt/lists/*
+
+# The X11 libs above are not cosmetic. NVIDIA's Vulkan ICD links against
+# libXext/libX11; without them the loader finds the driver-injected ICD JSON,
+# fails to dlopen libGLX_nvidia.so.0, and reports "vkCreateInstance: Found no
+# drivers! / ERROR_INCOMPATIBLE_DRIVER" -- which reads like a missing GPU or a
+# capabilities problem but is a missing shared object. Measured on an A40,
+# 2026-08-13: NVIDIA_DRIVER_CAPABILITIES=graphics was already correct; this
+# was the whole failure.
 
 # "graphics" is what installs the NVIDIA Vulkan ICD. Without it the binary
 # exits with "no GPU device found (Vulkan)" despite a working GPU.
@@ -67,4 +76,5 @@ VOLUME ["/models"]
 
 # entrypoint.sh fetches weights, then: see-through -m /models "$@"
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["--help"]
+# see-through rejects --help ("unknown arg"); selftest is the safe default.
+CMD ["selftest"]
