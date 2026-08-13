@@ -188,6 +188,12 @@ if [[ "${1:-}" == "selftest" ]]; then
   nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>&1 \
     | emit_stream INFO "gpu.info"
 
+  # NVIDIA/nvidia-container-toolkit#1952 (open as of 2026-07): libGLX_nvidia
+  # tries to initialise windowing in a headless container and fails to export
+  # the ICD entry point. Reports there associate it with /dev/dri not being
+  # mounted, so record whether it exists here.
+  ls -la /dev/dri 2>&1 | sed -n '1,10p' | emit_stream INFO "dev.dri"
+
   # Re-run ldconfig in case injection left the cache stale, then retry once.
   ldconfig 2>/dev/null || true
 
