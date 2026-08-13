@@ -7,7 +7,10 @@ name: image
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    # TEMPORARY: add-runpod-image publishes so the image can be pulled and
+    # verified on real GPU hardware before merging. Drop it from this list
+    # once verified -- main should be the only publishing branch.
+    branches: [main, add-runpod-image]
     paths: &image_paths
       - 'Dockerfile'
       - 'src/**'
