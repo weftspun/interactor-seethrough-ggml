@@ -44,7 +44,7 @@ FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libvulkan1 vulkan-tools ca-certificates curl jq zstd \
+      libvulkan1 vulkan-tools ca-certificates curl jq zstd netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # "graphics" is what installs the NVIDIA Vulkan ICD. Without it the binary
