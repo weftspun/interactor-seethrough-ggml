@@ -19,6 +19,7 @@ set -uo pipefail
 MODELS_DIR="${MODELS_DIR:-/models}"
 LOGF="${LOGF:-/tmp/otel-logs.ndjson}"
 LOG_PORT="${LOG_PORT:-8080}"
+OUT_DIR="${OUT_DIR:-/out}"
 
 OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-interactor-seethrough-ggml}"
 OTEL_SERVICE_VERSION="${OTEL_SERVICE_VERSION:-unknown}"
@@ -77,21 +78,74 @@ emit_stream() { # emit_stream <SEVERITY> <event.name>  -- one record per stdin l
 # while it is still computing:
 #     curl https://<podId>-8080.proxy.runpod.net
 # Deploy the pod with ports "8080/http" so the proxy hostname exists.
-serve_log() {
-  while true; do
-    {
+# Requests are dispatched by path so artifacts can be pulled off the pod --
+# a PSD is the actual deliverable and there is no other way out of a RunPod
+# container (no logs endpoint, no file API, no console download).
+#
+#   GET /           OTel NDJSON records (pollable during a run)
+#   GET /ls         listing of OUT_DIR
+#   GET /f/<name>   raw artifact, Content-Length set so binaries transfer intact
+http_handler() {
+  local method path proto h f n body
+  read -r method path proto || return
+  while IFS= read -r h; do [[ "$h" == $'\r' || -z "$h" ]] && break; done
+  path="${path%%\?*}"
+  case "$path" in
+    /|/logs)
+      n=$(wc -c < "$LOGF" 2>/dev/null || echo 0)
       printf 'HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n'
-      printf 'Cache-Control: no-store\r\nConnection: close\r\n\r\n'
+      printf 'Content-Length: %s\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n' "$n"
       cat "$LOGF" 2>/dev/null
-    } | nc -l "$LOG_PORT" >/dev/null 2>&1 || sleep 1
+      ;;
+    /ls)
+      body=$( { cd "$OUT_DIR" 2>/dev/null && ls -la; } 2>&1 || echo "no output dir" )
+      printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n'
+      printf 'Content-Length: %s\r\nConnection: close\r\n\r\n%s\n' "$(( ${#body} + 1 ))" "$body"
+      ;;
+    /f/*)
+      f="$OUT_DIR/$(basename "${path#/f/}")"
+      if [[ -f "$f" ]]; then
+        printf 'HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n'
+        printf 'Content-Length: %s\r\nConnection: close\r\n\r\n' "$(wc -c < "$f")"
+        cat "$f"
+      else
+        printf 'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+      fi
+      ;;
+    *)
+      printf 'HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+      ;;
+  esac
+}
+
+serve_log() {
+  local fifo=/tmp/.httpreq
+  rm -f "$fifo"; mkfifo "$fifo"
+  while true; do
+    http_handler < "$fifo" | nc -l "$LOG_PORT" > "$fifo" 2>/dev/null || sleep 1
   done
 }
 
+mkdir -p "$OUT_DIR"
 : > "$LOGF"
 if [[ "${LOG_SERVE:-1}" == "1" ]] && command -v nc >/dev/null 2>&1; then
   serve_log &
   emit INFO "log endpoint listening" "$(jq -nc --argjson p "$LOG_PORT" \
     '{"event.name":"log.endpoint.start","server.port":$p}')"
+fi
+
+# --- serve (Cog wire API) ---------------------------------------------------
+# POST /predictions, GET /health-check -- Cog's HTTP contract without the cog
+# package. Layers come back as separate outputs (base64 data URLs per the Cog
+# spec), so results are viewable layer by layer rather than only as a PSD.
+if [[ "${1:-}" == "serve" ]]; then
+  if [[ "${SKIP_WEIGHT_FETCH:-0}" != "1" ]]; then
+    emit INFO "weight fetch start" "$(jq -nc --arg t "${WEIGHTS_TAG:-}" --arg v "${WEIGHTS_VARIANT:-}" \
+      '{"event.name":"weights.fetch.start","weights.tag":$t,"weights.variant":$v}')"
+    /usr/local/bin/fetch-weights.sh 2>&1 | emit_stream INFO "weights.fetch"
+    emit INFO "weight fetch complete" '{"event.name":"weights.fetch.end"}'
+  fi
+  exec python3 /usr/local/bin/cog_server.py
 fi
 
 # --- selftest ---------------------------------------------------------------

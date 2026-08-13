@@ -45,7 +45,7 @@ FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libvulkan1 vulkan-tools ca-certificates curl jq zstd netcat-openbsd \
-      libxext6 libx11-6 libxcb1 libxau6 libxdmcp6 \
+      libxext6 libx11-6 libxcb1 libxau6 libxdmcp6 python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # The X11 libs above are not cosmetic. NVIDIA's Vulkan ICD links against
@@ -62,7 +62,7 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 ENV NVIDIA_VISIBLE_DEVICES=all
 
 COPY --from=build /src/build/see-through /usr/local/bin/see-through
-COPY scripts/fetch-weights.sh scripts/entrypoint.sh /usr/local/bin/
+COPY scripts/fetch-weights.sh scripts/entrypoint.sh scripts/cog_server.py /usr/local/bin/
 RUN chmod +x /usr/local/bin/fetch-weights.sh /usr/local/bin/entrypoint.sh
 
 # Weights are fetched from GitHub Releases on first run (~10.7GB compressed
@@ -76,5 +76,8 @@ VOLUME ["/models"]
 
 # entrypoint.sh fetches weights, then: see-through -m /models "$@"
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-# see-through rejects --help ("unknown arg"); selftest is the safe default.
-CMD ["selftest"]
+# `serve` exposes the Cog-compatible wire API on :8080 (POST /predictions,
+# GET /health-check) and is the mode this image exists for. `selftest` probes
+# the Vulkan device. see-through rejects --help ("unknown arg").
+EXPOSE 8080
+CMD ["serve"]
