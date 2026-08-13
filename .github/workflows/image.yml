@@ -33,6 +33,15 @@ env:
 
 jobs:
   image:
+    # Serialise image builds repo-wide. These are 10+ minute CUDA/Vulkan
+    # builds; a pushed stack starts one per branch and they only contend for
+    # runners. The workflow-level group above still cancels superseded runs
+    # of the same branch -- this one only throttles across branches.
+    # Caveat: GitHub queues at most one pending run per group and cancels the
+    # rest, so a stack PR whose build is dropped needs a manual re-run.
+    concurrency:
+      group: image-serialize-${{ github.repository }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
