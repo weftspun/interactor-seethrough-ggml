@@ -46,9 +46,19 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libvulkan1 vulkan-tools ca-certificates curl jq zstd netcat-openbsd \
       libxext6 libx11-6 libxcb1 libxau6 libxdmcp6 python3 \
+      libglvnd0 libgl1 libglx0 libegl1 libgles2 \
     && rm -rf /var/lib/apt/lists/*
 
-# The X11 libs above are not cosmetic. NVIDIA's Vulkan ICD links against
+# libGLX_nvidia.so.0 is a GLVND *vendor* library: it registers through
+# GLVND's dispatch layer (libGLdispatch.so.0 / libGLX.so.0, from libglvnd0).
+# Without the GLVND stack the loader can dlopen it but cannot resolve
+# vk_icdGetInstanceProcAddr, so vulkaninfo reports "Found no drivers!".
+# Measured on an A40 2026-08-13: X11 libs alone advanced the error from
+# "libXext.so.6: cannot open shared object file" to the ICD entry-point
+# failure; the GLVND stack is the other half. This package set matches what
+# llama.cpp's Vulkan container images install.
+#
+# The X11 libs are not cosmetic either. NVIDIA's Vulkan ICD links against
 # libXext/libX11; without them the loader finds the driver-injected ICD JSON,
 # fails to dlopen libGLX_nvidia.so.0, and reports "vkCreateInstance: Found no
 # drivers! / ERROR_INCOMPATIBLE_DRIVER" -- which reads like a missing GPU or a
@@ -58,7 +68,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # "graphics" is what installs the NVIDIA Vulkan ICD. Without it the binary
 # exits with "no GPU device found (Vulkan)" despite a working GPU.
-ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+# Working Vulkan containers use the full capability set; graphics alone
+# injects the ICD JSON but not everything the driver needs.
+ENV NVIDIA_DRIVER_CAPABILITIES=all
 ENV NVIDIA_VISIBLE_DEVICES=all
 
 COPY --from=build /src/build/see-through /usr/local/bin/see-through
