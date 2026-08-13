@@ -170,6 +170,27 @@ if [[ "${1:-}" == "selftest" ]]; then
   done
   [[ "$found_icd" -eq 1 ]] || { emit ERROR "no ICD manifest directory" '{"event.name":"vulkan.icd.missing"}'; rc=1; }
 
+  # Driver-injection diagnostics. The ICD JSON can be present and its library
+  # loadable while still not exporting vk_icdGetInstanceProcAddr, which happens
+  # when the runtime injects an incomplete driver set or ldconfig was never
+  # re-run after injection. Guessing apt packages against that is a coin flip;
+  # these three probes name the cause.
+  cat /etc/vulkan/icd.d/nvidia_icd.json /usr/share/vulkan/icd.d/nvidia_icd.json 2>/dev/null \
+    | emit_stream INFO "vulkan.icd.json"
+  ls -la /usr/lib/x86_64-linux-gnu/libGLX_nvidia.so* \
+         /usr/lib/x86_64-linux-gnu/libnvidia-glvkspirv.so* \
+         /usr/lib/x86_64-linux-gnu/libnvidia-vulkan* 2>&1 \
+    | emit_stream INFO "vulkan.driver.libs"
+  ldd /usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0 2>&1 | grep -i "not found\|=>" \
+    | sed -n '1,25p' | emit_stream INFO "vulkan.driver.ldd"
+  ldconfig -p 2>/dev/null | grep -ci nvidia | sed 's/^/nvidia libs in ldconfig cache: /' \
+    | emit_stream INFO "vulkan.ldconfig"
+  nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>&1 \
+    | emit_stream INFO "gpu.info"
+
+  # Re-run ldconfig in case injection left the cache stale, then retry once.
+  ldconfig 2>/dev/null || true
+
   if vulkaninfo --summary 2>&1 | sed -n '1,40p' | emit_stream INFO "vulkan.info"; then :; else
     emit ERROR "vulkaninfo failed" '{"event.name":"vulkan.info.failed"}'; rc=1
   fi
