@@ -44,7 +44,7 @@ FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libvulkan1 vulkan-tools ca-certificates \
+      libvulkan1 vulkan-tools ca-certificates curl jq zstd \
     && rm -rf /var/lib/apt/lists/*
 
 # "graphics" is what installs the NVIDIA Vulkan ICD. Without it the binary
@@ -53,11 +53,18 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 ENV NVIDIA_VISIBLE_DEVICES=all
 
 COPY --from=build /src/build/see-through /usr/local/bin/see-through
+COPY scripts/fetch-weights.sh scripts/entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/fetch-weights.sh /usr/local/bin/entrypoint.sh
 
-# Mount weights here (RunPod network volume).
-ENV SEETHROUGH_MODELS=/models
+# Weights are fetched from GitHub Releases on first run (~10.7GB compressed
+# for f16). Mounting a persistent volume here makes that a one-time cost;
+# without one it re-runs per cold start, which is still cheaper than a
+# RunPod network volume when runs are batched.
+ENV MODELS_DIR=/models
+ENV WEIGHTS_TAG=v0.1.0
+ENV WEIGHTS_VARIANT=f16
 VOLUME ["/models"]
 
-# ./see-through -m models -i in.png -o out.psd
-ENTRYPOINT ["/usr/local/bin/see-through"]
+# entrypoint.sh fetches weights, then: see-through -m /models "$@"
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["--help"]

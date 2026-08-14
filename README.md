@@ -11,11 +11,11 @@ Get the weights (Or grab a prebuilt release binary instead of building).
 ```bash
 # Download and unpack into a `models/` folder, then build.
 mkdir models && cd models
-gh release download v0.0.2-dev --repo weftspun/see-through-cpp \
+gh release download v0.0.2-dev --repo weftspun/interactor-seethrough-ggml \
     -p "lama.gguf" -p "layerdiff-te1.gguf" -p "layerdiff-te2.gguf" \
     -p "layerdiff-vae.gguf" -p "marigold-te.gguf" -p "marigold-vae.gguf" \
     -p "trans-vae.gguf"
-gh release download v0.0.2-dev --repo weftspun/see-through-cpp \
+gh release download v0.0.2-dev --repo weftspun/interactor-seethrough-ggml \
     -p "layerdiff-unet.gguf.zst.part*" -p "marigold-unet.gguf.zst.part*"
 cat layerdiff-unet.gguf.zst.part* | zstd -d -o layerdiff-unet.gguf
 cat marigold-unet.gguf.zst.part* | zstd -d -o marigold-unet.gguf
