@@ -18,6 +18,7 @@ Stdlib only: the runtime image has no pip and does not need one.
 
 import base64
 import json
+import threading
 import mimetypes
 import os
 import subprocess
@@ -35,6 +36,39 @@ PORT = int(os.environ.get("LOG_PORT", "8080"))
 BINARY = os.environ.get("SEETHROUGH_BIN", "/usr/local/bin/see-through")
 
 SETUP_STATUS = {"status": "READY", "started_at": time.time(), "logs": ""}
+
+# Async predictions. RunPod fronts pods with a proxy that closes long requests
+# (observed: HTTP 524 at ~100s), so a synchronous 1280px/30-step run can never
+# return over the wire. Cog's spec already covers this: `Prefer: respond-async`
+# returns 202 immediately and the client polls GET /predictions/{id}.
+PREDICTIONS = {}
+_LOCK = threading.Lock()
+
+
+def _store(pred):
+    with _LOCK:
+        PREDICTIONS[pred["id"]] = pred
+    # Persist so a result outlives the process; the container can be restarted
+    # or the server can die without losing a completed run.
+    try:
+        d = OUT_DIR / pred["id"]
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "prediction.json").write_text(json.dumps(pred))
+    except OSError:
+        pass
+
+
+def _load(pid):
+    with _LOCK:
+        if pid in PREDICTIONS:
+            return PREDICTIONS[pid]
+    f = OUT_DIR / pid / "prediction.json"
+    if f.exists():
+        try:
+            return json.loads(f.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+    return None
 
 
 def emit(severity, body, **attrs):
@@ -76,8 +110,8 @@ def fetch_input(spec: str, dest: Path) -> Path:
     return dest
 
 
-def run_prediction(inp: dict) -> dict:
-    pid = str(uuid.uuid4())
+def run_prediction(inp: dict, pid=None) -> dict:
+    pid = pid or str(uuid.uuid4())
     work = OUT_DIR / pid
     layers = work / "layers"
     layers.mkdir(parents=True, exist_ok=True)
@@ -145,6 +179,10 @@ class Handler(BaseHTTPRequestHandler):
                              "setup": {"status": "succeeded", "logs": ""},
                              "version": {"cog": "wire-compatible",
                                          "python": sys.version.split()[0]}})
+        elif self.path.startswith("/predictions/"):
+            pid = self.path.split("/predictions/", 1)[1].split("?")[0]
+            pred = _load(pid)
+            self._send(200, pred) if pred else self._send(404, {"detail": "not found"})
         elif self.path in ("/", "/logs"):
             data = LOGF.read_bytes() if LOGF.exists() else b""
             self._send(200, data, "application/x-ndjson")
@@ -165,6 +203,24 @@ class Handler(BaseHTTPRequestHandler):
         if "image" not in inp:
             self._send(422, {"detail": "input.image is required"})
             return
+
+        if "respond-async" in (self.headers.get("Prefer") or "").lower():
+            pid = req.get("prediction_id") or str(uuid.uuid4())
+            _store({"id": pid, "input": inp, "status": "starting",
+                    "output": None, "logs": "", "metrics": {}})
+
+            def worker():
+                _store({**_load(pid), "status": "processing"})
+                try:
+                    _store(run_prediction(inp, pid))
+                except Exception as exc:
+                    _store({"id": pid, "input": inp, "status": "failed",
+                            "error": str(exc), "metrics": {}})
+
+            threading.Thread(target=worker, daemon=True).start()
+            self._send(202, _load(pid))
+            return
+
         try:
             self._send(200, run_prediction(inp))
         except Exception as exc:  # surface as a failed prediction, per spec
