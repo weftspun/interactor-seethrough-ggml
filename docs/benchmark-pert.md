@@ -41,11 +41,8 @@ completed carry `E = 0.0 (DONE)` so they drop out of the remaining schedule.
 | H | 0.24 | 0.61 |
 | I | 0.61 | 1.16 |
 | J | 1.16 | **1.64** |
-| K | 0.00 | 2.33 |
-| L | 2.33 | 2.97 |
-| M | 2.97 | **3.45** |
-| N | 3.45 | 8.12 |
-| O | 8.12 | 8.67 |
+| N | 1.64 | 6.31 |
+| O | 6.31 | **6.86** |
 
 ## Critical path
 
@@ -67,56 +64,48 @@ flowchart LR
   G[G Fix build<br/>0.24h] --> H[H Weight fetch<br/>0.37h]
   H --> I[I First layers<br/>0.55h]
   I --> J[J ggml timed<br/>0.48h]
-  F[F torch image<br/>DONE] --> K[K torch entrypoint<br/>2.33h]
-  K --> L[L torch VRAM<br/>0.63h]
-  L --> M[M torch timed<br/>0.48h]
-  J --> N[N IoU parity<br/>4.67h]
-  M --> N
+  J --> N[N IoU parity<br/>vs f16 reference<br/>4.67h]
   N --> O[O Writeup<br/>0.55h]
 
   classDef crit fill:#ffdddd,stroke:#cc0000,color:#000;
-  classDef slack fill:#eef4ff,stroke:#5577aa,color:#000;
   classDef done fill:#eeeeee,stroke:#999999,color:#333;
-  class K,L,M,N,O crit;
-  class G,H,I,J slack;
-  class A,B,C,D,E,F done;
+  class G,H,I,J,N,O crit;
+  class A,B,C,D,E done;
 ```
 
 ```mermaid
 gantt
-  title Critical path to a ggml-vs-torch benchmark
+  title Critical path to the ggml benchmark (torch dropped)
   dateFormat YYYY-MM-DD
   axisFormat %m-%d
-  section ggml (slack 1.81h)
-  G Fix build        :g1, 2026-08-14, 15m
-  H Weight fetch     :h1, after g1, 22m
-  I First layers     :i1, after h1, 33m
-  J ggml timed       :j1, after i1, 29m
-  section torch (critical)
-  K torch entrypoint :crit, k1, 2026-08-14, 140m
-  L torch VRAM       :crit, l1, after k1, 38m
-  M torch timed      :crit, m1, after l1, 29m
-  section joint (critical)
-  N IoU parity       :crit, n1, after m1, 280m
+  section get it running
+  G Fix build        :crit, g1, 2026-08-14, 15m
+  H Weight fetch     :crit, h1, after g1, 22m
+  I First layers     :crit, i1, after h1, 33m
+  J ggml timed       :crit, j1, after i1, 29m
+  section prove it
+  N IoU parity       :crit, n1, after j1, 280m
   O Writeup          :crit, o1, after n1, 33m
 ```
 
 ## What this says
 
-Everything worked on so far tonight — Vulkan enablement, the log endpoint,
-the Cog API, the port-collision fix — sits on the **slack** branch. It felt
-like the blocker because it was where the failures were, but failures are not
-the same as long poles.
+**N dominates at 4.67 h — 68% of what is left — and does not exist.** The
+parity gate `docs/quantization-ladder.md` depends on has no harness. Without
+it the ladder is a plan, not a result, and no quantization claim can be made.
 
-**K is untouched and on the critical path.** The torch image builds and its
-dependencies resolve, but `inference/scripts/inference_psd.py` has never been
-invoked from it; its argument surface is unconfirmed and the ENTRYPOINT is an
-assumption. That is the earliest undone critical-path task.
+**There is no slack left.** Dropping torch removed the only parallel branch,
+so every remaining task delays the finish by its full duration. G→H→I→J is
+cheap (1.64 h total) but now sits directly in front of the long pole.
 
-**N dominates at 4.67 h** and does not exist in any form. The parity gate that
-`docs/quantization-ladder.md` depends on has no harness. It gates the only
-output that matters — a defensible comparison — and cannot start until both
-implementations produce layers.
+What the earlier version got wrong is worth keeping visible: the ggml work
+was originally *off* the critical path, and it only became critical because
+the scope shrank around it. Effort spent there was not justified by the
+schedule at the time -- it was justified after the fact by a decision that
+had not been made yet.
 
-Corollary: finishing the ggml chain sooner does not move the finish date at
-all. It only stops being true if the ggml chain overruns its 1.81 h of slack.
+The comparison N now performs is ggml-vs-its-own-f16-reference, not
+ggml-vs-torch. That is a weaker claim: it can show quantization preserves
+output, but it cannot show this implementation matches upstream. If a
+cross-implementation number is ever wanted, the archived torch repo is the
+starting point.
