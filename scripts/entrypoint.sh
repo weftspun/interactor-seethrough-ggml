@@ -128,7 +128,10 @@ serve_log() {
 
 mkdir -p "$OUT_DIR"
 : > "$LOGF"
-if [[ "${LOG_SERVE:-1}" == "1" ]] && command -v nc >/dev/null 2>&1; then
+# NOT in serve mode: cog_server.py binds the same port and would fail with
+# "address already in use", taking the container down with it (PID 1 after
+# exec). Learned the hard way 2026-08-13.
+if [[ "${1:-}" != "serve" ]] && [[ "${LOG_SERVE:-1}" == "1" ]] && command -v nc >/dev/null 2>&1; then
   serve_log &
   emit INFO "log endpoint listening" "$(jq -nc --argjson p "$LOG_PORT" \
     '{"event.name":"log.endpoint.start","server.port":$p}')"
@@ -145,7 +148,18 @@ if [[ "${1:-}" == "serve" ]]; then
     /usr/local/bin/fetch-weights.sh 2>&1 | emit_stream INFO "weights.fetch"
     emit INFO "weight fetch complete" '{"event.name":"weights.fetch.end"}'
   fi
-  exec python3 /usr/local/bin/cog_server.py
+  df -h / /tmp 2>&1 | sed -n '1,6p' | emit_stream INFO "disk.usage"
+  free -m 2>&1 | sed -n '1,3p' | emit_stream INFO "memory.usage"
+
+  # Not exec: if the server dies, keep serving the log so the failure is
+  # retrievable instead of vanishing with the container.
+  python3 /usr/local/bin/cog_server.py
+  rc=$?
+  emit ERROR "cog server exited" "$(jq -nc --argjson rc "$rc" \
+    '{"event.name":"server.exited","process.exit.code":$rc}')"
+  serve_log &
+  emit INFO "holding open after server exit" '{"event.name":"hold.open"}'
+  while true; do sleep 30; done
 fi
 
 # --- selftest ---------------------------------------------------------------
