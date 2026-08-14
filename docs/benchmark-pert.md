@@ -1,111 +1,117 @@
 # PERT: getting the ggml benchmark on RunPod
 
-> **Revised 2026-08-14.** The torch comparison was dropped and
-> `interactor-seethrough-torch` archived. Tasks K/L/M are struck from the
-> model. Consequence: the ggml chain, which had 1.81 h of slack, **is now the
-> critical path**, and N changes meaning -- parity is measured against the
-> f16 reference PSD (the convention this repo already uses) rather than
-> against a second implementation.
->
-> Revised critical path: **G -> H -> I -> J -> N -> O = 6.86 h**.
-> Long pole is still N (4.67 h), which still does not exist.
+Three-point estimates in hours, `E = (O + 4M + P) / 6`. Completed tasks carry
+`E = 0.0 (DONE)` and drop out of the remaining schedule.
 
-Three-point estimates in hours, `E = (O + 4M + P) / 6`. Tasks already
-completed carry `E = 0.0 (DONE)` so they drop out of the remaining schedule.
+**Revision 2 (2026-08-14).** The torch comparison was dropped and
+`interactor-seethrough-torch` archived, removing tasks K/L/M. G, H and I are
+now complete: the image builds, Vulkan initialises on an A40 inside a
+container, 14 GB of weights fetch from GitHub Releases, and a prediction
+returns 30 per-layer PNGs plus a PSD over the Cog wire API. Three new tasks
+(P, Q, R) came out of failures during those runs rather than from planning.
 
 ## Tasks
 
 | ID | Task | Pred | O | M | P | E |
 |----|------|------|---|---|---|---|
-| A | Image build pipeline (Dockerfile, CI, GHCR) | — | — | — | — | 0.0 (DONE) |
-| B | Weight fetcher, asset resolution verified | A | — | — | — | 0.0 (DONE) |
-| C | Log retrieval without console (OTel endpoint) | A | — | — | — | 0.0 (DONE) |
-| D | Vulkan enablement (X11 + GLVND + caps=all) | C | — | — | — | 0.0 (DONE) |
-| E | Cog wire API, local smoke test | A | — | — | — | 0.0 (DONE) |
-| F | torch image builds, cu128 deps resolve | — | — | — | — | 0.0 (DONE) |
-| G | Port-collision fix build publishes | D,E | 0.15 | 0.2 | 0.5 | 0.24 |
-| H | Serve-mode run: 10.7GB weight fetch completes | B,G | 0.2 | 0.3 | 0.8 | 0.37 |
-| I | First prediction returns per-layer PNGs | H | 0.2 | 0.4 | 1.5 | 0.55 |
-| J | ggml timed benchmark run | I | 0.3 | 0.4 | 1.0 | 0.48 |
-| ~~K~~ | ~~torch entrypoint verified on GPU~~ | — | — | — | — | dropped |
-| ~~L~~ | ~~torch VRAM footprint~~ | — | — | — | — | dropped |
-| ~~M~~ | ~~torch timed benchmark~~ | — | — | — | — | dropped |
-| N | IoU parity harness vs f16 reference (>= 0.99/layer) | J | 2.0 | 4.0 | 10.0 | **4.67** |
-| O | Comparison writeup + logbook + ADR | N | 0.3 | 0.5 | 1.0 | 0.55 |
+| A–F | Image pipeline, weight fetcher, log endpoint, Vulkan, Cog API | — | — | — | — | 0.0 (DONE) |
+| G | Port-collision fix published | — | — | — | — | 0.0 (DONE) |
+| H | 10.7 GB weight fetch completes on host | — | — | — | — | 0.0 (DONE) |
+| I | Prediction returns per-layer PNGs (verified real) | — | — | — | — | 0.0 (DONE) |
+| J | Timed 1280px/30-step benchmark captured | — | 0.1 | 0.3 | 1.0 | 0.38 |
+| P | Async server rebuilt + redeployed | — | 0.3 | 0.5 | 1.0 | 0.55 |
+| Q | Stream inference logs live (Popen, not capture-then-emit) | — | 0.2 | 0.4 | 1.0 | 0.47 |
+| R | Persistent weights volume (avoid 14 GB refetch per deploy) | — | 0.3 | 0.6 | 1.5 | 0.70 |
+| N | IoU parity harness vs f16 reference (>= 0.99/layer) | J,P | 2.0 | 4.0 | 10.0 | **4.67** |
+| S | Quantization ladder rungs measured (q4 vs f16) | N | 0.5 | 1.0 | 2.0 | 1.08 |
+| T | Merge stack PRs, drop temp-publish branch | J | 0.2 | 0.3 | 0.8 | 0.37 |
+| O | Writeup: logbook entry + ADR | S | 0.3 | 0.5 | 1.0 | 0.55 |
 
 ## Forward pass
 
-| ID | ES | EF |
-|----|----|----|
-| G | 0.00 | 0.24 |
-| H | 0.24 | 0.61 |
-| I | 0.61 | 1.16 |
-| J | 1.16 | **1.64** |
-| N | 1.64 | 6.31 |
-| O | 6.31 | **6.86** |
+| ID | ES | EF | On path |
+|----|----|----|---------|
+| J | 0.00 | 0.38 | feeds N |
+| P | 0.00 | **0.55** | **critical** |
+| Q | 0.00 | 0.47 | no |
+| R | 0.00 | 0.70 | no |
+| N | 0.55 | 5.22 | **critical** |
+| S | 5.22 | 6.30 | **critical** |
+| T | 0.38 | 0.75 | no |
+| O | 6.30 | **6.85** | **critical** |
 
 ## Critical path
 
-**G → H → I → J → N → O = 6.86 h** (revised, torch dropped)
+**P → N → S → O = 6.85 h**
 
-Every remaining task is on the critical path -- with the torch branch gone
-there is no parallel work left to hold slack. The long pole is **N**
-(4.67 h, 68% of the remaining schedule) and it still does not exist.
-
-The original path was K → L → M → N → O = 8.67 h; dropping torch removed
-1.81 h from the finish and eliminated the only source of slack.
+Long pole is **N** at 4.67 h — **68% of everything remaining** — and it does
+not exist in any form.
 
 ```mermaid
 flowchart LR
-  A[A Image pipeline<br/>DONE] --> G
-  D[D Vulkan enabled<br/>DONE] --> G
-  E[E Cog API<br/>DONE] --> G
-  B[B Weight fetcher<br/>DONE] --> H
-  G[G Fix build<br/>0.24h] --> H[H Weight fetch<br/>0.37h]
-  H --> I[I First layers<br/>0.55h]
-  I --> J[J ggml timed<br/>0.48h]
-  J --> N[N IoU parity<br/>vs f16 reference<br/>4.67h]
-  N --> O[O Writeup<br/>0.55h]
+  DONE[A-I complete<br/>image, Vulkan, weights,<br/>first layers] --> J[J Timed 1280/30<br/>0.38h]
+  DONE --> P[P Async redeploy<br/>0.55h]
+  DONE --> Q[Q Live log stream<br/>0.47h]
+  DONE --> R[R Weights volume<br/>0.70h]
+  J --> N[N IoU parity harness<br/>4.67h]
+  P --> N
+  N --> S[S Ladder rungs<br/>1.08h]
+  S --> O[O Writeup<br/>0.55h]
+  J --> T[T Merge stack<br/>0.37h]
 
   classDef crit fill:#ffdddd,stroke:#cc0000,color:#000;
+  classDef off fill:#eef4ff,stroke:#5577aa,color:#000;
   classDef done fill:#eeeeee,stroke:#999999,color:#333;
-  class G,H,I,J,N,O crit;
-  class A,B,C,D,E done;
+  class P,N,S,O crit;
+  class J,Q,R,T off;
+  class DONE done;
 ```
 
 ```mermaid
 gantt
-  title Critical path to the ggml benchmark (torch dropped)
+  title Critical path to a defensible ggml benchmark
   dateFormat YYYY-MM-DD
   axisFormat %m-%d
-  section get it running
-  G Fix build        :crit, g1, 2026-08-14, 15m
-  H Weight fetch     :crit, h1, after g1, 22m
-  I First layers     :crit, i1, after h1, 33m
-  J ggml timed       :crit, j1, after i1, 29m
-  section prove it
-  N IoU parity       :crit, n1, after j1, 280m
-  O Writeup          :crit, o1, after n1, 33m
+  section parallel
+  J Timed run       :j1, 2026-08-14, 23m
+  Q Live log stream :q1, 2026-08-14, 28m
+  R Weights volume  :r1, 2026-08-14, 42m
+  T Merge stack     :t1, after j1, 22m
+  section critical
+  P Async redeploy  :crit, p1, 2026-08-14, 33m
+  N IoU parity      :crit, n1, after p1, 280m
+  S Ladder rungs    :crit, s1, after n1, 65m
+  O Writeup         :crit, o1, after s1, 33m
 ```
 
 ## What this says
 
-**N dominates at 4.67 h — 68% of what is left — and does not exist.** The
-parity gate `docs/quantization-ladder.md` depends on has no harness. Without
-it the ladder is a plan, not a result, and no quantization claim can be made.
+**N is the whole schedule.** At 4.67 h it is 68% of the remaining 6.85 h and
+nothing about it has been started. Everything built so far — the image, the
+Vulkan fixes, the Cog API, the log endpoint — is *plumbing to make N
+possible*. The plumbing now works; the measurement does not exist.
 
-**There is no slack left.** Dropping torch removed the only parallel branch,
-so every remaining task delays the finish by its full duration. G→H→I→J is
-cheap (1.64 h total) but now sits directly in front of the long pole.
+**Speed was never the hard part.** The timing number (J) costs 0.38 h. The
+defensibility of that number costs 4.67 h. Any version of this project that
+reports a wall-clock figure without N is reporting an unvalidated number.
 
-What the earlier version got wrong is worth keeping visible: the ggml work
-was originally *off* the critical path, and it only became critical because
-the scope shrank around it. Effort spent there was not justified by the
-schedule at the time -- it was justified after the fact by a decision that
-had not been made yet.
+**Three tasks came out of failures, not planning.** P exists because RunPod's
+proxy closes connections at ~100 s, so a synchronous 1280px run can never
+return over the wire. Q exists because the log endpoint does not stream during
+inference — `subprocess.run(capture_output=True)` buffers until exit, which
+contradicts the reason the endpoint was built. R exists because every redeploy
+refetches 14 GB. Only P gates N; Q and R are quality and speed.
 
-The comparison N now performs is ggml-vs-its-own-f16-reference, not
-ggml-vs-torch. That is a weaker claim: it can show quantization preserves
-output, but it cannot show this implementation matches upstream. If a
-cross-implementation number is ever wanted, the archived torch repo is the
-starting point.
+**Q is off the critical path and still worth doing.** Being blind for the
+duration of a 10-minute run is what turned J into guesswork about whether it
+had hung.
+
+## Superseded
+
+Revision 1 modelled a ggml-vs-torch comparison with critical path
+K → L → M → N → O = 8.67 h, where the ggml chain held 1.81 h of slack.
+Dropping torch removed that branch. Worth keeping visible: the ggml work was
+originally *off* the critical path and became critical only because the scope
+shrank around it. Parity is now ggml-vs-its-own-f16-reference — it can show
+quantization preserves output, but not that this implementation matches
+upstream.
