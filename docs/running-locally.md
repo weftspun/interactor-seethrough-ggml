@@ -1,6 +1,30 @@
 # Running locally on an RTX 4090
 
-Two routes. The container is the faster path to a first run because the Vulkan
+## Host requirements — read first
+
+This document targets an **x86_64 Linux host with an NVIDIA 4090 and the
+proprietary driver** (or Windows via WSL2). It does not describe this
+project's macOS path.
+
+**It will not work on an Apple Silicon Mac.** `docker --gpus all` has no
+NVIDIA runtime there, and `see-through-ubuntu-latest-vulkan.zip` is an x86_64
+Linux binary. An NVIDIA eGPU over Thunderbolt is also not a route: Apple
+Silicon ships no NVIDIA driver, and driving the card from userspace panicked
+the host (`[SPTM] VIOLATION_T8110_DART_INVALID_ERR_MASK`) -- see the archived
+`interactor-seethrough-tinygrad` repo, ADR 0002.
+
+On an Apple Silicon Mac the only supported route is the macOS release build
+running Vulkan over MoltenVK/Metal:
+
+    gh release download v0.1.0 --repo weftspun/interactor-seethrough-ggml \
+      -p "see-through-macos-14-vulkan.zip"
+
+Expect roughly **6h10m** for 1280px/30 steps on an M2 Pro -- ~34x slower than
+the A40 measured here, and ~6x less efficient per unit of theoretical compute
+than the same code on the Vulkan/NVIDIA path. That gap is the reason this
+project rents GPUs at all.
+
+Two routes below, both Linux/NVIDIA. The container is the faster path to a first run because the Vulkan
 packaging problems are already solved in it; the native binary is leaner if you
 already have a working Vulkan setup.
 
