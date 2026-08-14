@@ -10,7 +10,7 @@
 # Actions runner disk. Mount a RunPod network volume at /models instead.
 
 # ---- build ----
-FROM nvidia/cuda:12.8.0-devel-ubuntu24.04 AS build
+FROM ubuntu:24.04 AS build
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -40,7 +40,16 @@ RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
  && cmake --build build --config Release --target see-through -j"$(nproc)"
 
 # ---- runtime ----
-FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+# ubuntu, not nvidia/cuda: this is a Vulkan build (GGML_VULKAN=ON) and links
+# libvulkan, never libcudart. The NVIDIA driver libraries -- libGLX_nvidia,
+# libnvidia-glvkspirv, nvidia-smi -- are injected at runtime by
+# nvidia-container-toolkit regardless of base image (they appear owned by
+# nobody:nogroup, i.e. from the host). The CUDA runtime base was 2069 MB of a
+# 2.28 GB image and contributed nothing.
+#
+# Measured 2026-08-14: image pull was >7 min on a $0.74/hr pod -- more
+# expensive than the inference it was there to run.
+FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
