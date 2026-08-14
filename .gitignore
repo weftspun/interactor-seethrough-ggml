@@ -39,6 +39,7 @@ golden_output.psd
 /upstream_test3*
 /t1_*
 reference_output.psd
+/out/
 /out_*
 /out.psd
 /out.psd.json
