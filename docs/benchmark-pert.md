@@ -1,4 +1,14 @@
-# PERT: getting a ggml-vs-torch benchmark on RunPod
+# PERT: getting the ggml benchmark on RunPod
+
+> **Revised 2026-08-14.** The torch comparison was dropped and
+> `interactor-seethrough-torch` archived. Tasks K/L/M are struck from the
+> model. Consequence: the ggml chain, which had 1.81 h of slack, **is now the
+> critical path**, and N changes meaning -- parity is measured against the
+> f16 reference PSD (the convention this repo already uses) rather than
+> against a second implementation.
+>
+> Revised critical path: **G -> H -> I -> J -> N -> O = 6.86 h**.
+> Long pole is still N (4.67 h), which still does not exist.
 
 Three-point estimates in hours, `E = (O + 4M + P) / 6`. Tasks already
 completed carry `E = 0.0 (DONE)` so they drop out of the remaining schedule.
@@ -17,10 +27,10 @@ completed carry `E = 0.0 (DONE)` so they drop out of the remaining schedule.
 | H | Serve-mode run: 10.7GB weight fetch completes | B,G | 0.2 | 0.3 | 0.8 | 0.37 |
 | I | First prediction returns per-layer PNGs | H | 0.2 | 0.4 | 1.5 | 0.55 |
 | J | ggml timed benchmark run | I | 0.3 | 0.4 | 1.0 | 0.48 |
-| K | torch entrypoint + arg surface verified on GPU | F | 1.0 | 2.0 | 5.0 | **2.33** |
-| L | torch pod run, VRAM footprint measured | K | 0.3 | 0.5 | 1.5 | 0.63 |
-| M | torch timed benchmark run | L | 0.3 | 0.4 | 1.0 | 0.48 |
-| N | IoU parity harness (>= 0.99 per layer) | J,M | 2.0 | 4.0 | 10.0 | **4.67** |
+| ~~K~~ | ~~torch entrypoint verified on GPU~~ | — | — | — | — | dropped |
+| ~~L~~ | ~~torch VRAM footprint~~ | — | — | — | — | dropped |
+| ~~M~~ | ~~torch timed benchmark~~ | — | — | — | — | dropped |
+| N | IoU parity harness vs f16 reference (>= 0.99/layer) | J | 2.0 | 4.0 | 10.0 | **4.67** |
 | O | Comparison writeup + logbook + ADR | N | 0.3 | 0.5 | 1.0 | 0.55 |
 
 ## Forward pass
@@ -39,12 +49,14 @@ completed carry `E = 0.0 (DONE)` so they drop out of the remaining schedule.
 
 ## Critical path
 
-**K → L → M → N → O = 8.67 h**
+**G → H → I → J → N → O = 6.86 h** (revised, torch dropped)
 
-The ggml chain (G→H→I→J) finishes at EF 1.64, well before N can start at
-3.45. It has **1.81 h of slack** and is *off* the critical path.
+Every remaining task is on the critical path -- with the torch branch gone
+there is no parallel work left to hold slack. The long pole is **N**
+(4.67 h, 68% of the remaining schedule) and it still does not exist.
 
-Long poles: **N** (4.67 h) then **K** (2.33 h).
+The original path was K → L → M → N → O = 8.67 h; dropping torch removed
+1.81 h from the finish and eliminated the only source of slack.
 
 ```mermaid
 flowchart LR
