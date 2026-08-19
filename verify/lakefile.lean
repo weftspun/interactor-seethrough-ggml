@@ -45,3 +45,8 @@ lean_exe quant_design where
 -- by src/copy_cost.cpp, so it needs no seethrough_c link.
 lean_exe layout_design where
   root := `LayoutDesign
+
+-- Optimization ladder: which speed rungs were tried, measured, and why each
+-- failed its gate. Pure arithmetic over measured figures; no GPU, no link.
+lean_exe opt_ladder where
+  root := `OptLadder

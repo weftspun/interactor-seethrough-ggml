@@ -213,6 +213,7 @@ static bool pipe_load(const PipelineConfig &cfg, Model &m, const std::string &pa
 		m.conv_f16 = cfg.conv_f16;
 		m.rowchunk_budget_mb = cfg.rowchunk_budget_mb;
 		m.linear_fast_all = cfg.linear_fast;
+		m.bf16_weights = cfg.bf16;
 		// A later re-run of the Lean kernel-witness gate (verify/KernelGate,
 		// 2026-07-20) found flash_attn_ext failing at layerdiff-unet's
 		// production shapes (t1600/t4096/t6400 self-attention, 77-token

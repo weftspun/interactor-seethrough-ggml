@@ -66,6 +66,48 @@ bool Model::load_backend(const char *path, ggml_backend_buffer_type *buft) {
 			}
 		}
 	}
+	// Retype f16 -> bf16 BEFORE allocation. ggml_type_size is 2 for both, so
+	// nb[] and ggml_nbytes are unchanged and no strides need fixing; the
+	// buffer allocated below is byte-identical in size either way. Doing this
+	// after allocation would be wrong -- the buffer is sized from the types.
+	// bf16 is restricted to the UNets. The VAEs are excluded by name because
+	// GGML_PREC_F32 was adopted for "the VAE's fragile near-cancelling resnet
+	// reduction" (MADR 0009, see linear() in this file) -- and a near-cancelling
+	// reduction is the worst place to spend mantissa bits, since catastrophic
+	// cancellation is exactly a mantissa problem. bf16 trades 3 of f16's 10
+	// mantissa bits for exponent range it does not need here. The UNet's
+	// transformer linears, where the comment notes f32 "halves coopmat2 GEMM
+	// throughput", carry no such documented fragility.
+	const bool path_is_vae = strstr(path, "vae") != nullptr;
+	if (bf16_weights && path_is_vae) {
+		fprintf(stderr, "[perf] bf16: skipping %s (VAE: near-cancelling reduction, MADR 0009)\n", path);
+	}
+	if (bf16_weights && !path_is_vae) {
+		int retyped = 0, skipped_conv = 0;
+		for (ggml_tensor *t = ggml_get_first_tensor(c); t; t = ggml_get_next_tensor(c, t)) {
+			if (t->type != GGML_TYPE_F16) {
+				continue;
+			}
+			// Only 2D weights, i.e. nn.Linear. Convolution kernels are 4D
+			// (kw, kh, in, out) and ggml_vk_conv_2d asserts
+			// `src0->type == F32 || src0->type == F16` -- there is no bf16
+			// path for native conv2d, and retyping them aborts the run
+			// (ggml-vulkan.cpp:13665). Conv also reaches mul_mat via the
+			// im2col path in some configurations, so leaving conv weights
+			// f16 keeps BOTH conv routes valid rather than only one.
+			if (ggml_n_dims(t) != 2) {
+				skipped_conv++;
+				continue;
+			}
+			t->type = GGML_TYPE_BF16;
+			retyped++;
+		}
+		if (retyped || skipped_conv) {
+			fprintf(stderr, "[perf] bf16: retyped %d 2D f16 weights, kept %d non-2D as f16 in %s\n",
+					retyped, skipped_conv, path);
+		}
+	}
+
 	ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(c, buft);
 	if (!buf) {
 		gguf_free(g);
@@ -98,6 +140,20 @@ bool Model::load_backend(const char *path, ggml_backend_buffer_type *buft) {
 			fclose(f);
 			gguf_free(g);
 			return false;
+		}
+		// The file still holds f16; the tensor is now bf16. Convert the
+		// staging bytes in place -- same element count, same byte count.
+		// f16 -> f32 -> bf16 rather than a bit twiddle, because the exponent
+		// bias differs (f16 is 5-bit biased 15, bf16 is 8-bit biased 127):
+		// reinterpreting the bits would silently produce garbage magnitudes.
+		if (bf16_weights && t->type == GGML_TYPE_BF16) {
+			const size_t n = nbytes / sizeof(uint16_t);
+			uint16_t *p = reinterpret_cast<uint16_t *>(staging.data());
+			for (size_t e = 0; e < n; e++) {
+				ggml_fp16_t h;
+				h = (ggml_fp16_t)p[e];
+				p[e] = ggml_fp32_to_bf16(ggml_fp16_to_fp32(h)).bits;
+			}
 		}
 		ggml_backend_tensor_set(t, staging.data(), 0, nbytes);
 		weights[ggml_get_name(t)] = t;
@@ -146,6 +202,30 @@ ggml_tensor *mul_mat_f32(ggml_context *ctx, ggml_tensor *a, ggml_tensor *b) {
 	// stores intermediate results back to f16 which overflows at ~64K.
 	// Cast the activation (b) to f32 to ensure kernel_mul_mm_f16_f32 is
 	// selected (f32 accumulation) instead of kernel_mul_mm_f16_f16.
+	// bf16 weights: leave precision to the backend. The f32 forcing below
+	// exists to avoid Metal's kernel_mul_mm_f16_f16 storing intermediates
+	// back to f16 and overflowing at ~64K -- bf16 carries f32's exponent
+	// range, so that overflow cannot occur and the guard is unnecessary.
+	// Forcing PREC_F32 here anyway would discard the entire reason for
+	// loading bf16 weights ("f32 accumulation halves coopmat2 GEMM
+	// throughput", per the linear() comment below).
+	if (a->type == GGML_TYPE_BF16) {
+		// bf16 STORAGE with f32 ACCUMULATION -- the conservative pairing, and
+		// what tensor cores do natively (bf16 in, f32 accumulator).
+		//
+		// The win being chased here is not the accumulator: it is that `b` is
+		// no longer cast up to f32 below, so activations move at half the
+		// bytes into the matmul. Keeping PREC_F32 costs that nothing and
+		// preserves the accumulation precision the VAE work (MADR 0009) and
+		// the 1280px collapse investigation both leaned on.
+		//
+		// Dropping to bf16 accumulation as well would be a second, separable
+		// experiment. It is not bundled in here: two precision changes at once
+		// cannot be attributed if the output moves.
+		ggml_tensor *r = ggml_mul_mat(ctx, a, b);
+		ggml_mul_mat_set_prec(r, GGML_PREC_F32);
+		return r;
+	}
 	if (a->type == GGML_TYPE_F16 && b->type != GGML_TYPE_F32) {
 		b = ggml_cast(ctx, b, GGML_TYPE_F32);
 	}

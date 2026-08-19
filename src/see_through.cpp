@@ -100,6 +100,8 @@ int main(int argc, char **argv) {
 			cfg.depth_split_tags = split_csv(next());
 		} else if (a == "--split-lr-tags") {
 			cfg.lr_split_tags = split_csv(next());
+		} else if (a == "--bf16") {
+			cfg.bf16 = true;
 		} else if (a == "--no-conv-f16") {
 			cfg.conv_f16 = false;
 		} else if (a == "--rowchunk-budget-mb") {
@@ -125,7 +127,7 @@ int main(int argc, char **argv) {
 						"[--device vulkan] (GPU-only; --device cpu is not supported) "
 						"[--no-split-depth] [--no-split-lr] "
 						"[--split-depth-tags tag1,tag2,...] [--split-lr-tags tag1,tag2,...] "
-						"[--no-conv-f16] [--rowchunk-budget-mb N] [--linear-fast] "
+						"[--bf16] [--no-conv-f16] [--rowchunk-budget-mb N] [--linear-fast] "
 						"[--no-linear-fast-body] [--no-tiled-attn] [--tiled-attn-layerdiff] "
 						"[--decode-batch N]\n");
 		return 1;

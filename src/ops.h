@@ -23,6 +23,23 @@ struct Model {
 	int gn_groups = 32;
 	float gn_eps = 1e-6f;
 	int head_dim = 0; // spatial attn: 0 = one head of dim C
+	// Convert f16 weights to bf16 at load. Both are 2 bytes, so this is
+	// size- and stride-neutral -- the tensors are retyped before allocation
+	// and the staging bytes converted in place, costing no extra VRAM.
+	//
+	// Why: torch runs this whole pipeline in bfloat16, and measures 163.4s
+	// against this port's 346.9s. Here every matmul casts activations to f32
+	// and sets GGML_PREC_F32 (ops.cpp mul_mat_f32), whose own comment notes
+	// "f32 accumulation halves coopmat2 GEMM throughput". That f32 forcing
+	// exists to dodge an f16 accumulator overflow at ~64K on Metal's
+	// kernel_mul_mm_f16_f16 -- a problem bf16 does not have, because bf16
+	// carries f32's 8 exponent bits. So bf16 targets the throughput without
+	// reintroducing the overflow the f32 cast was guarding against.
+	//
+	// The cost is mantissa: f16 has 10 bits, bf16 has 7. That is a real
+	// numerical change and must clear the Lean witness gate, not just run.
+	bool bf16_weights = false;
+
 	bool linear_fast = false; // linear() GEMMs at backend-default precision
 							  // instead of GGML_PREC_F32 (2026-07-20 A/B:
 							  // full-pipeline fast-linear drifted only the

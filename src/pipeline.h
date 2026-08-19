@@ -46,6 +46,11 @@ struct PipelineConfig {
 
 	// GPU/precision knobs (were SEETHROUGH_* env vars). Defaults reproduce the
 	// prior default behavior; flags are the escape hatches for A/B testing.
+	// --bf16: load f16 weights as bf16 and stop forcing GGML_PREC_F32 in
+	// matmul. Targets the ~2x GEMM throughput that f32 accumulation costs.
+	// Off by default: bf16 drops 3 mantissa bits vs f16 and must clear the
+	// Lean witness gate before it can be a default.
+	bool bf16 = false;
 	bool conv_f16 = true; // --no-conv-f16: f32 im2col for f16 wts
 	int rowchunk_budget_mb = 256; // --rowchunk-budget-mb N: per-chunk
 								  // im2col cap. Small enough to give the
