@@ -40,3 +40,8 @@ lean_exe emit_shaders where
 lean_exe quant_design where
   root := `QuantDesign
   moreLinkArgs := seethroughCLib
+
+-- Copy-layout design search. No GPU: pure cost arithmetic over shapes measured
+-- by src/copy_cost.cpp, so it needs no seethrough_c link.
+lean_exe layout_design where
+  root := `LayoutDesign

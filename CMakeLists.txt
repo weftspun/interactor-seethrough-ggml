@@ -62,6 +62,7 @@ target_include_directories(Psd PUBLIC third_party/psd_sdk/src)
 
 add_library(seethrough STATIC
     src/ops.cpp
+    src/copy_cost.cpp
     src/vae.cpp
     src/clip.cpp
     src/unet_frame.cpp

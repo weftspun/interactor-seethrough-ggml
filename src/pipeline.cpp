@@ -1,6 +1,7 @@
 #include "pipeline.h"
 
 #include "clip.h"
+#include "copy_cost.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
@@ -531,6 +532,10 @@ bool layerdiff_pass(const PipelineConfig &cfg, const Image &page_rgb,
 					}
 				}
 				fprintf(stderr, "\n");
+				// Op counts alone are what motivated a copy elimination that
+				// measured 6% SLOWER with bit-identical output. Report what the
+				// copies actually cost beside the count that misled.
+				copy_cost_report(gf, "layerdiff");
 			}
 			if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
 				return false;
