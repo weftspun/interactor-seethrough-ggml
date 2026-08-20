@@ -1,7 +1,7 @@
 # see-through.cpp — ARCHIVED
 
 **This port is archived. `seethrough-torch` is the line of work.** Nothing here is
-deleted and nothing is retracted; the measurements below stand. Development stopped
+deleted and nothing is retracted. The measurements below stand. Development stopped
 because the question it existed to answer got answered, and the answer was no.
 
 ## Why it stopped

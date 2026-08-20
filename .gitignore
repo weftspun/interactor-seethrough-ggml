@@ -60,3 +60,4 @@ art/concept/*.psd
 build-shaders/
 build-nocopy/
 profiling/costprobe*
+build-*/
