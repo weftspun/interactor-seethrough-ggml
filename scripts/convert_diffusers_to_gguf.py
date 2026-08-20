@@ -39,10 +39,12 @@ GGUF_ALIGNMENT = 32
 GGML_TYPE_F32 = 0
 GGML_TYPE_F16 = 1
 GGML_TYPE_Q4_0 = 2
+GGML_TYPE_Q8_0 = 8
 GGUF_VT_UINT32 = 4
 GGUF_VT_STRING = 8
 
 QK4_0 = 32  # ggml block_q4_0: one f16 scale + 32 packed 4-bit values (16 bytes)
+QK8_0 = 32  # ggml block_q8_0: one f16 scale + 32 int8 values (32 bytes)
 
 
 def quantize_q4_0(arr):
@@ -63,6 +65,45 @@ def quantize_q4_0(arr):
     d16 = d.astype(np.float32).astype("<f2").tobytes()
     out = bytearray()
     d16_view = np.frombuffer(d16, dtype="<f2")
+    for i in range(x.shape[0]):
+        out += d16_view[i].tobytes()
+        out += qs[i].tobytes()
+    return bytes(out)
+
+
+def quantize_q4_in_q8_0(arr):
+    """Q4_0's VALUES, stored in a Q8_0 container.
+
+    Not a precision change: the Q4_0 grid is computed exactly as above, then the
+    nibble q is written as the int8 (q - 8) against the same f16 scale d. Q4_0
+    dequantizes to d*(q-8) and Q8_0 to d*qs, so the reconstructed weights are
+    bit-identical and any run using these must match a Q4_0 run exactly. That
+    makes this a pure FORMAT experiment with a free correctness gate --
+    quantizing Q8_0 fresh from f16 would change precision and format together
+    and confound the two.
+
+    Why it might be faster despite doubling the bytes: ggml-vulkan's MMQ shader
+    keeps Q4_0 packed in shared memory and unpacks it INSIDE the dot-product
+    loop (mul_mmq_funcs.glsl: `vui & 0x0F0F0F0F`, `>> 4`), so the mask/shift is
+    paid every time a tile element participates in a dot, plus a `- 8.0*ds.y`
+    zero-point correction. Q8_0 feeds dotPacked4x8EXT directly with neither.
+    Both do the same number of dot instructions per 32 values; Q4_0 simply does
+    more ALU around them. Weight bandwidth is ~0.2% of a step here, so the
+    doubled reads are close to free -- but shared-memory pressure also doubles,
+    which is why this is a measurement and not an assertion.
+    """
+    x = arr.reshape(-1, QK8_0).astype(np.float64)
+    amax_idx = np.argmax(np.abs(x), axis=1)
+    max_val = x[np.arange(x.shape[0]), amax_idx]
+    d = max_val / -8.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        id_ = np.where(d != 0, 1.0 / d, 0.0)
+    xq = (x * id_[:, None]).astype(np.float32)
+    # identical rounding to quantize_q4_0, including the +8.5 / clamp-to-15
+    nib = np.minimum(15, (xq + 8.5).astype(np.int8)).astype(np.int16)
+    qs = (nib - 8).astype(np.int8)  # back to signed, same value d*(q-8)
+    d16_view = np.frombuffer(d.astype(np.float32).astype("<f2").tobytes(), dtype="<f2")
+    out = bytearray()
     for i in range(x.shape[0]):
         out += d16_view[i].tobytes()
         out += qs[i].tobytes()
@@ -143,6 +184,13 @@ def load_safetensors(path):
 def choose_type(name, shape, ftype):
     if ftype == 0:
         return GGML_TYPE_F32
+    if ftype == 3:
+        # same scope as ftype 2, different container -- see quantize_q4_in_q8_0
+        if len(shape) == 2 and "norm" not in name and shape[-1] % QK8_0 == 0:
+            return GGML_TYPE_Q8_0
+        if len(shape) >= 2 and "norm" not in name:
+            return GGML_TYPE_F16
+        return GGML_TYPE_F32
     if ftype == 2:
         # nn.Linear weights only (2D, in_features % QK4_0 == 0) — matches
         # upstream's own NF4 scope (bitsandbytes Linear4bit; conv kernels are
@@ -164,6 +212,8 @@ def to_bytes(arr, gtype):
         return arr.astype("<f4", copy=False).tobytes()
     if gtype == GGML_TYPE_Q4_0:
         return quantize_q4_0(arr)
+    if gtype == GGML_TYPE_Q8_0:
+        return quantize_q4_in_q8_0(arr)
     return arr.astype("<f2").tobytes()
 
 
