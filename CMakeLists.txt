@@ -71,6 +71,11 @@ add_library(seethrough STATIC
     src/image_utils.cpp
     src/postproc.cpp
     src/pipeline.cpp
+    src/interactor.cpp
+    # The contract's CBOR writer, built here rather than via its CMakeLists:
+    # one translation unit, and add_subdirectory would put a second project's
+    # targets and install rules in this build for it.
+    third_party/interactor/src/cbor.c
 )
 target_link_libraries(seethrough PUBLIC ggml)
 # -DGGML_CPU=OFF is a supported configuration: the pipeline is GPU-only
@@ -82,7 +87,7 @@ target_link_libraries(seethrough PUBLIC ggml)
 if (GGML_CPU)
     target_compile_definitions(seethrough PUBLIC SEETHROUGH_HAVE_CPU_BACKEND)
 endif()
-target_include_directories(seethrough PUBLIC src third_party/stb)
+target_include_directories(seethrough PUBLIC src third_party/stb third_party/interactor/include)
 target_include_directories(seethrough PRIVATE third_party/ggml/src)
 
 add_executable(see-through src/see_through.cpp src/psd_write.cpp)
