@@ -7,7 +7,10 @@ name: image
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    # TEMPORARY: add-runpod-image publishes so the image can be pulled and
+    # verified on real GPU hardware before merging. Drop it from this list
+    # once verified -- main should be the only publishing branch.
+    branches: [main, add-runpod-image]
     paths: &image_paths
       - 'Dockerfile'
       - 'src/**'
@@ -42,6 +45,12 @@ jobs:
     concurrency:
       group: image-serialize-${{ github.repository }}
       cancel-in-progress: false
+    # A branch that publishes via `push` would otherwise build twice, once
+    # per event. Skip the pull_request copy for those; every other branch
+    # still gets its PR build.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.head_ref != 'add-runpod-image'
     runs-on: ubuntu-latest
     permissions:
       contents: read

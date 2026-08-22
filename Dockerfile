@@ -10,7 +10,7 @@
 # Actions runner disk. Mount a RunPod network volume at /models instead.
 
 # ---- build ----
-FROM nvidia/cuda:12.8.0-devel-ubuntu24.04 AS build
+FROM ubuntu:24.04 AS build
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -40,20 +40,50 @@ RUN cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
  && cmake --build build --config Release --target see-through -j"$(nproc)"
 
 # ---- runtime ----
-FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+# ubuntu, not nvidia/cuda: this is a Vulkan build (GGML_VULKAN=ON) and links
+# libvulkan, never libcudart. The NVIDIA driver libraries -- libGLX_nvidia,
+# libnvidia-glvkspirv, nvidia-smi -- are injected at runtime by
+# nvidia-container-toolkit regardless of base image (they appear owned by
+# nobody:nogroup, i.e. from the host). The CUDA runtime base was 2069 MB of a
+# 2.28 GB image and contributed nothing.
+#
+# Measured 2026-08-14: image pull was >7 min on a $0.74/hr pod -- more
+# expensive than the inference it was there to run.
+FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libvulkan1 vulkan-tools ca-certificates curl jq zstd \
+      libvulkan1 vulkan-tools ca-certificates curl jq zstd netcat-openbsd \
+      libxext6 libx11-6 libxcb1 libxau6 libxdmcp6 python3 \
+      libglvnd0 libgl1 libglx0 libegl1 libgles2 \
     && rm -rf /var/lib/apt/lists/*
+
+# libGLX_nvidia.so.0 is a GLVND *vendor* library: it registers through
+# GLVND's dispatch layer (libGLdispatch.so.0 / libGLX.so.0, from libglvnd0).
+# Without the GLVND stack the loader can dlopen it but cannot resolve
+# vk_icdGetInstanceProcAddr, so vulkaninfo reports "Found no drivers!".
+# Measured on an A40 2026-08-13: X11 libs alone advanced the error from
+# "libXext.so.6: cannot open shared object file" to the ICD entry-point
+# failure; the GLVND stack is the other half. This package set matches what
+# llama.cpp's Vulkan container images install.
+#
+# The X11 libs are not cosmetic either. NVIDIA's Vulkan ICD links against
+# libXext/libX11; without them the loader finds the driver-injected ICD JSON,
+# fails to dlopen libGLX_nvidia.so.0, and reports "vkCreateInstance: Found no
+# drivers! / ERROR_INCOMPATIBLE_DRIVER" -- which reads like a missing GPU or a
+# capabilities problem but is a missing shared object. Measured on an A40,
+# 2026-08-13: NVIDIA_DRIVER_CAPABILITIES=graphics was already correct; this
+# was the whole failure.
 
 # "graphics" is what installs the NVIDIA Vulkan ICD. Without it the binary
 # exits with "no GPU device found (Vulkan)" despite a working GPU.
-ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+# Working Vulkan containers use the full capability set; graphics alone
+# injects the ICD JSON but not everything the driver needs.
+ENV NVIDIA_DRIVER_CAPABILITIES=all
 ENV NVIDIA_VISIBLE_DEVICES=all
 
 COPY --from=build /src/build/see-through /usr/local/bin/see-through
-COPY scripts/fetch-weights.sh scripts/entrypoint.sh /usr/local/bin/
+COPY scripts/fetch-weights.sh scripts/entrypoint.sh scripts/cog_server.py /usr/local/bin/
 RUN chmod +x /usr/local/bin/fetch-weights.sh /usr/local/bin/entrypoint.sh
 
 # Weights are fetched from GitHub Releases on first run (~10.7GB compressed
@@ -67,4 +97,8 @@ VOLUME ["/models"]
 
 # entrypoint.sh fetches weights, then: see-through -m /models "$@"
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["--help"]
+# `serve` exposes the Cog-compatible wire API on :8080 (POST /predictions,
+# GET /health-check) and is the mode this image exists for. `selftest` probes
+# the Vulkan device. see-through rejects --help ("unknown arg").
+EXPOSE 8080
+CMD ["serve"]
